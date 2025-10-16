@@ -68,7 +68,7 @@ limiter = Limiter(
     app=app,
     default_limits=["200 per day", "50 per hour"],
     storage_uri="memory://",
-    strategy="fixed-window-elastic-expiry"
+    strategy="fixed-window"
 )
 
 # Define stricter limits for authentication endpoints
