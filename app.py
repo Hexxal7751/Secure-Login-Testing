@@ -5,7 +5,7 @@ import io
 import bcrypt
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from flask import Flask, request, render_template, redirect, url_for, session, send_file, flash, make_response, jsonify, g
+from flask import Flask, request, render_template, redirect, url_for, session, send_file, flash, make_response, jsonify, g, has_request_context
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
@@ -257,8 +257,8 @@ def passkey_verified_required(f):
     return decorated_function_3
 
 def get_db_connection(user_id=None):
-    # Get user_id from session if not provided
-    if user_id is None and 'user_id' in session:
+    # Get user_id from session if not provided and within request context
+    if user_id is None and has_request_context() and 'user_id' in session:
         user_id = session['user_id']
     
     conn = psycopg2.connect(os.getenv("SUPABASE_URL"))
