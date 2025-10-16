@@ -278,10 +278,6 @@ def get_db_connection(user_id=None):
             is_admin = True
             conn.commit()
     
-    # Store these settings to reset them when closing the connection
-    conn.rls_user_id = user_id
-    conn.rls_is_admin = is_admin
-    
     # Add a wrapper method to automatically reset RLS context when closing
     original_close = conn.close
     def close_with_rls_reset():
