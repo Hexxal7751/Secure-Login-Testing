@@ -271,24 +271,24 @@ def get_db_connection(user_id=None):
             conn.commit()
     
     # For admin operations (like initial user lookup), set admin flag
-    is_admin = False
     if user_id is None:  # If no user_id, we're likely doing an admin operation
         with conn.cursor() as cur:
             cur.execute('SET app.is_admin = true')
-            is_admin = True
             conn.commit()
     
-    # Add a wrapper method to automatically reset RLS context when closing
-    original_close = conn.close
-    def close_with_rls_reset():
+    return conn
+
+def reset_connection_context(conn):
+    """Reset RLS context before closing a connection"""
+    try:
         with conn.cursor() as cur:
             cur.execute("RESET app.current_user_id")
             cur.execute("RESET app.is_admin")
             conn.commit()
-        original_close()
-    conn.close = close_with_rls_reset
-    
-    return conn
+    except Exception as e:
+        app.logger.error(f"Error resetting connection context: {e}")
+    finally:
+        conn.close()
 
 def create_users_table():
     conn = get_db_connection()
@@ -307,6 +307,9 @@ def create_users_table():
                 account_locked_until TIMESTAMP
             );
         """)
+        conn.commit()
+    finally:
+        reset_connection_context(conn)
         
         # Add last_login column if it doesn't exist
         cur.execute("""
@@ -357,40 +360,48 @@ def create_users_table():
 def get_user(username):
     # For initial login, we don't have a user_id yet, so we use admin access
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE username = %s", (username,))
-    user = cur.fetchone()
-    conn.close()
-    return user
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user = cur.fetchone()
+        return user
+    finally:
+        reset_connection_context(conn)
 
 def get_user_by_id(user_id):
     # Pass the user_id to the connection for RLS
     conn = get_db_connection(user_id)
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
-    user = cur.fetchone()
-    conn.close()
-    return user
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+        user = cur.fetchone()
+        return user
+    finally:
+        reset_connection_context(conn)
 
 def get_user_passkeys(user_id):
     # Pass the user_id to the connection for RLS
     conn = get_db_connection(user_id)
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM passkeys WHERE user_id = %s", (user_id,))
-    passkeys = cur.fetchall()
-    conn.close()
-    return passkeys
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM passkeys WHERE user_id = %s", (user_id,))
+        passkeys = cur.fetchall()
+        return passkeys
+    finally:
+        reset_connection_context(conn)
 
 def save_passkey(user_id, credential_id, public_key):
     # Pass the user_id to the connection for RLS
     conn = get_db_connection(user_id)
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO passkeys (user_id, credential_id, public_key) 
-        VALUES (%s, %s, %s)
-    """, (user_id, credential_id, public_key))
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO passkeys (user_id, credential_id, public_key)
+            VALUES (%s, %s, %s)
+        """, (user_id, credential_id, public_key))
+        conn.commit()
+    finally:
+        reset_connection_context(conn)
 
 def update_passkey_sign_count(credential_id, sign_count, user_id=None):
     # Get user_id from session if not provided
