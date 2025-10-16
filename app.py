@@ -72,9 +72,9 @@ limiter = Limiter(
 )
 
 # Define stricter limits for authentication endpoints
-login_limit = ["5 per minute", "20 per hour"]
-register_limit = ["3 per minute", "10 per hour"]
-sensitive_limit = ["3 per minute", "15 per hour"]
+login_limit = "5 per minute; 20 per hour"
+register_limit = "3 per minute; 10 per hour"
+sensitive_limit = "3 per minute; 15 per hour"
 
 # Track failed login attempts
 failed_attempts = {}
