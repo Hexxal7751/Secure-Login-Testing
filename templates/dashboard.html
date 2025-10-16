@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dashboard - Secure Login Testing</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='icon.ico') }}">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style nonce="{{ csp_nonce }}">
+        :root {
+            --primary-blue: #2563eb;
+            --success-green: #059669;
+            --danger-red: #dc2626;
+            --neutral-50: #f9fafb;
+            --neutral-100: #f3f4f6;
+            --neutral-200: #e5e7eb;
+            --neutral-700: #374151;
+            --neutral-800: #1f2937;
+            --neutral-900: #111827;
+        }
+
+        body {
+            background-color: var(--neutral-50);
+            font-family: 'Inter', sans-serif;
+        }
+
+        .dashboard-container {
+            max-width: 480px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+
+        .dashboard-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+            padding: 2rem;
+            margin-bottom: 1rem;
+        }
+
+        .security-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--neutral-200);
+        }
+
+        .security-icon {
+            width: 48px;
+            height: 48px;
+            background: var(--primary-blue);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.5rem;
+        }
+
+        .welcome-text {
+            color: var(--neutral-700);
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .username {
+            color: var(--neutral-900);
+            font-weight: 700;
+        }
+
+        .security-status {
+            background: var(--neutral-100);
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 1.5rem 0;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .status-icon {
+            width: 32px;
+            height: 32px;
+            background: var(--success-green);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+        }
+
+        .status-text {
+            color: var(--neutral-700);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .action-button {
+            width: 100%;
+            padding: 0.75rem;
+            border-radius: 8px;
+            font-weight: 500;
+            font-size: 0.875rem;
+            transition: all 0.2s ease;
+            border: none;
+            cursor: pointer;
+        }
+
+        .logout-button {
+            background: var(--danger-red);
+            color: white;
+        }
+
+        .logout-button:hover {
+            background: #b91c1c;
+        }
+
+        .theme-toggle {
+            background: var(--neutral-100);
+            color: var(--neutral-700);
+            margin-top: 1rem;
+        }
+
+        .theme-toggle:hover {
+            background: var(--neutral-200);
+        }
+
+        .security-details {
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--neutral-200);
+        }
+
+        .detail-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 0;
+            color: var(--neutral-700);
+            font-size: 0.875rem;
+        }
+
+        .detail-label {
+            font-weight: 500;
+        }
+
+        .detail-value {
+            color: var(--neutral-900);
+            font-weight: 600;
+        }
+
+        /* Dark mode styles */
+        body.dark-theme {
+            background-color: var(--neutral-900);
+        }
+
+        .dark-theme .dashboard-card {
+            background: var(--neutral-800);
+        }
+
+        .dark-theme .welcome-text {
+            color: var(--neutral-100);
+        }
+
+        .dark-theme .username {
+            color: white;
+        }
+
+        .dark-theme .security-status {
+            background: var(--neutral-700);
+        }
+
+        .dark-theme .status-text {
+            color: var(--neutral-100);
+        }
+
+        .dark-theme .theme-toggle {
+            background: var(--neutral-700);
+            color: var(--neutral-100);
+        }
+
+        .dark-theme .theme-toggle:hover {
+            background: var(--neutral-600);
+        }
+
+        .dark-theme .security-details {
+            border-top-color: var(--neutral-700);
+        }
+
+        .dark-theme .detail-item {
+            color: var(--neutral-200);
+        }
+
+        .dark-theme .detail-value {
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Compact Welcome Header -->
+        <div class="glass-card welcome-header">
+            <div class="welcome-content">
+                <div class="welcome-icon">👋</div>
+                <div class="welcome-text">
+                    <h1>Welcome back, <span class="username">{{ session['username'] }}</span>!</h1>
+                    <p>Your account is fully secured with the latest authentication technology</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Compact Security Status Cards -->
+        <div class="security-grid">
+            <!-- 2FA Status -->
+            <div class="glass-card status-card">
+                <div class="status-icon success">🔐</div>
+                <div class="status-content">
+                    <h3>Two-Factor Authentication</h3>
+                    <p class="status-text">Active & Protecting</p>
+                    <div class="status-badge success">Enabled</div>
+                </div>
+            </div>
+
+            <!-- Passkey Status -->
+            <div class="glass-card status-card">
+                <div class="status-icon success">🔑</div>
+                <div class="status-content">
+                    <h3>Passkey Security</h3>
+                    <p class="status-text">Maximum Protection</p>
+                    <div class="status-badge success">Active</div>
+                </div>
+            </div>
+
+            <!-- Session Status -->
+            <div class="glass-card status-card">
+                <div class="status-icon info">⏰</div>
+                <div class="status-content">
+                    <h3>Session Status</h3>
+                    <p class="status-text">Secure & Active</p>
+                    <div class="status-badge info">Live</div>
+                </div>
+            </div>
+
+            <!-- Security Level -->
+            <div class="glass-card status-card">
+                <div class="status-icon warning">🛡️</div>
+                <div class="status-content">
+                    <h3>Security Level</h3>
+                    <p class="status-text">Maximum Protection</p>
+                    <div class="status-badge warning">Premium</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Actions & Recent Activity -->
+        <div class="dashboard-content">
+            <!-- Quick Actions -->
+            <div class="glass-card quick-actions">
+                <h2>Quick Actions</h2>
+                <div class="actions-grid">
+                    <button class="action-btn" onclick="refreshSession()">
+                        <span class="action-icon">🔄</span>
+                        <span class="action-text">Refresh Session</span>
+                    </button>
+                    <button class="action-btn" onclick="showSecurityInfo()">
+                        <span class="action-icon">ℹ️</span>
+                        <span class="action-text">Security Info</span>
+                    </button>
+                    <button class="action-btn" onclick="exportSecurityReport()">
+                        <span class="action-icon">📊</span>
+                        <span class="action-text">Security Report</span>
+                    </button>
+                    <button class="action-btn" onclick="showAccountDetails()">
+                        <span class="action-icon">👤</span>
+                        <span class="action-text">Account Details</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Recent Activity -->
+            <div class="glass-card recent-activity">
+                <h2>Recent Activity</h2>
+                <div class="activity-list">
+                    <div class="activity-item">
+                        <div class="activity-icon success">✅</div>
+                        <div class="activity-content">
+                            <div class="activity-title">Successful Login</div>
+                            <div class="activity-time">Just now</div>
+                        </div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-icon info">🔑</div>
+                        <div class="activity-content">
+                            <div class="activity-title">Passkey Verification</div>
+                            <div class="activity-time">Just now</div>
+                        </div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-icon warning">🔐</div>
+                        <div class="activity-content">
+                            <div class="activity-title">2FA Verification</div>
+                            <div class="activity-time">Just now</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Security Tips -->
+        <div class="glass-card security-tips">
+            <h2>Security Tips</h2>
+            <div class="tips-grid">
+                <div class="tip-item">
+                    <div class="tip-icon">💡</div>
+                    <div class="tip-content">
+                        <h4>Keep Your Device Updated</h4>
+                        <p>Regular updates ensure your device has the latest security patches</p>
+                    </div>
+                </div>
+                <div class="tip-item">
+                    <div class="tip-icon">🔒</div>
+                    <div class="tip-content">
+                        <h4>Use Strong Passwords</h4>
+                        <p>Combine letters, numbers, and symbols for maximum security</p>
+                    </div>
+                </div>
+                <div class="tip-item">
+                    <div class="tip-icon">📱</div>
+                    <div class="tip-content">
+                        <h4>Enable Biometric Security</h4>
+                        <p>Use fingerprint or face recognition for quick, secure access</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-buttons">
+            <button class="btn btn-secondary theme-toggle" id="themeToggle">
+                <span>🌙 Toggle Theme</span>
+            </button>
+            <a href="{{ url_for('logout') }}" class="btn btn-danger">
+                <span>🚪 Sign Out</span>
+            </a>
+        </div>
+
+        <!-- Universal touch-based emergency logout -->
+    <div class="emergency-touch-area" id="emergencyTouchArea">
+        <div class="touch-indicator">
+            <span>Touch and hold for emergency logout</span>
+            <div class="touch-progress" id="touchProgress"></div>
+        </div>
+    </div>
+    </div>
+
+    <!-- Security Info Modal -->
+    <div class="spinner-overlay" id="securityModal" style="z-index: 999;">
+        <div class="glass-card security-modal">
+            <h3 style="margin-bottom: 1rem;">🔒 Security Information</h3>
+            <div class="security-info">
+                <div class="info-item">
+                    <strong>Account Created:</strong> <span>Just now</span>
+                </div>
+                <div class="info-item">
+                    <strong>Last Login:</strong> <span>Just now</span>
+                </div>
+                <div class="info-item">
+                    <strong>2FA Status:</strong> <span style="color: #10b981;">Active</span>
+                </div>
+                <div class="info-item">
+                    <strong>Passkey Status:</strong> <span style="color: #10b981;">Active</span>
+                </div>
+                <div class="info-item">
+                    <strong>Session Duration:</strong> <span>Active</span>
+                </div>
+                <div class="info-item">
+                    <strong>Security Score:</strong> <span style="color: #10b981;">100/100</span>
+                </div>
+            </div>
+            <button class="btn btn-secondary" onclick="hideSecurityInfo()" style="margin-top: 1rem;">
+                <span>Close</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Emergency Logout Modal -->
+    <div class="spinner-overlay" id="emergencyModal" style="z-index: 999;">
+        <div class="glass-card emergency-modal">
+            <h3 style="color: #ef4444; margin-bottom: 1rem;">🚨 Emergency Logout</h3>
+            <p style="margin-bottom: 2rem;">Are you sure you want to logout immediately? This will end your current session.</p>
+            <div style="display: flex; gap: 1rem;">
+                <button class="btn btn-secondary" onclick="hideEmergencyLogout()" style="flex: 1;">
+                    <span>❌ Cancel</span>
+                </button>
+                <a href="{{ url_for('emergency_logout') }}" class="btn btn-danger" style="flex: 1; text-decoration: none;">
+                    <span>🚪 Logout Now</span>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Credits Button -->
+    <button id="creditsBtn" class="credits-btn" title="Credits">
+        <span style="font-size:1.2rem;">ℹ️</span>
+    </button>
+    <!-- Credits Modal -->
+    <div id="creditsModal" class="credits-modal-overlay">
+        <div class="credits-modal">
+            <div class="credits-header">
+                <h3>Project Credits</h3>
+            </div>
+            <div class="credits-body">
+                <p class="credits-author">This project is created by <strong>Hexxal7751</strong></p><br>
+                <div class="credits-contact">
+                    <div><span class="credits-contact-icon">📧</span> <a href="mailto:hexxal.7751@gmail.com">hexxal.7751@gmail.com</a></div>
+                    <div><span class="credits-contact-icon">💻</span> <a href="https://github.com/Hexxal7751/Secure-Login-Testing" target="_blank">github.com/Hexxal7751/Secure-Login-Testing</a></div>
+                    <div><span class="credits-contact-icon">💬</span> <span class="credits-discord-label">Discord Username:</span> <span class="credits-discord-username">hexxal.7751</span></div>
+                    <div><span class="credits-contact-icon"></span> <span class="credits-discord-label">Discord Discriminator:</span> <span class="credits-discord-discriminator">Hexxal#7751</span></div>
+                </div>
+            </div>
+            <div class="credits-modal-instruction">Click outside this window to close.</div>
+        </div>
+    </div>
+
+    <script nonce="{{ csp_nonce }}">
+        const themeToggle = document.getElementById("themeToggle");
+        themeToggle.addEventListener("click", function() {
+            document.body.classList.toggle("dark-theme");
+            const isDark = document.body.classList.contains("dark-theme");
+            themeToggle.innerHTML = isDark ? '<span>☀️ Light Mode</span>' : '<span>🌙 Dark Mode</span>';
+            localStorage.setItem('theme', isDark ? 'dark' : 'light');
+        });
+
+        // Check for saved theme preference
+        if (localStorage.getItem('theme') === 'dark') {
+            document.body.classList.add('dark-theme');
+            themeToggle.innerHTML = '<span>☀️ Light Mode</span>';
+        }
+
+        // Quick Actions Functions
+        function refreshSession() {
+            location.reload();
+        }
+
+        function showSecurityInfo() {
+            document.getElementById('securityModal').classList.add('active');
+        }
+
+        function hideSecurityInfo() {
+            document.getElementById('securityModal').classList.remove('active');
+        }
+
+        function exportSecurityReport() {
+            const report = {
+                username: "{{ session['username'] }}",
+                timestamp: new Date().toISOString(),
+                securityStatus: "Maximum Protection",
+                twoFactorEnabled: true,
+                passkeyEnabled: true,
+                sessionActive: true
+            };
+            
+            const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'security-report.json';
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function showAccountDetails() {
+            alert('Account Details:\nUsername: {{ session["username"] }}\nSecurity Level: Maximum\n2FA: Enabled\nPasskey: Enabled');
+        }
+
+        // Emergency logout functions
+    function showEmergencyLogout() {
+        document.getElementById('emergencyModal').classList.add('active');
+    }
+
+    function hideEmergencyLogout() {
+        document.getElementById('emergencyModal').classList.remove('active');
+    }
+
+    // Touch-based emergency logout
+    const touchArea = document.getElementById('emergencyTouchArea');
+    const touchProgress = document.getElementById('touchProgress');
+    let touchTimer = null;
+    let touchDuration = 0;
+    const requiredHoldTime = 2000; // 2 seconds hold time
+    
+    // Handle touch/mouse events for all devices
+    ['mousedown', 'touchstart'].forEach(eventType => {
+        touchArea.addEventListener(eventType, function(e) {
+            e.preventDefault();
+            touchDuration = 0;
+            touchProgress.style.width = '0%';
+            
+            touchTimer = setInterval(function() {
+                touchDuration += 100;
+                const progressPercent = (touchDuration / requiredHoldTime) * 100;
+                touchProgress.style.width = progressPercent + '%';
+                
+                if (touchDuration >= requiredHoldTime) {
+                    clearInterval(touchTimer);
+                    window.location.href = "{{ url_for('emergency_logout') }}";
+                }
+            }, 100);
+        });
+    });
+    
+    ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(eventType => {
+        touchArea.addEventListener(eventType, function() {
+            clearInterval(touchTimer);
+            touchProgress.style.width = '0%';
+        });
+    });
+
+    // Close modal when clicking outside
+    document.getElementById('emergencyModal').addEventListener('click', function(e) {
+        if (e.target === this) {
+            hideEmergencyLogout();
+        }
+    });
+
+        document.getElementById('securityModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                hideSecurityInfo();
+            }
+        });
+
+        // Credits modal logic
+        const creditsBtn = document.getElementById('creditsBtn');
+        const creditsModal = document.getElementById('creditsModal');
+        creditsBtn.addEventListener('click', function() {
+            creditsModal.classList.add('active');
+        });
+        function closeCredits() {
+            creditsModal.classList.remove('active');
+        }
+        creditsModal.addEventListener('click', function(e) {
+            if (e.target === creditsModal) closeCredits();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Verify Passkey - Secure Login Testing</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='icon.ico') }}">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style nonce="{{ csp_nonce }}">
+        :root {
+            --primary-blue: #2563eb;
+            --success-green: #059669;
+            --danger-red: #dc2626;
+            --neutral-50: #f9fafb;
+            --neutral-200: #e5e7eb;
+            --neutral-700: #374151;
+            --neutral-800: #1f2937;
+            --neutral-900: #111827;
+        }
+        body { background-color: var(--neutral-50); font-family: 'Inter', sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .verify-container { max-width: 480px; width: 100%; padding: 0 1rem; }
+        .verify-card { background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06); padding: 2rem; text-align: center; }
+        .verify-title { color: var(--neutral-900); font-weight: 600; font-size: 1.5rem; margin-bottom: 0.5rem; }
+        .verify-subtitle { color: var(--neutral-700); font-size: 0.875rem; margin-bottom: 2rem; }
+        .action-button { width: 100%; padding: 0.75rem; border-radius: 8px; font-weight: 500; font-size: 1rem; transition: all 0.2s ease; border: none; cursor: pointer; background: var(--success-green); color: white; }
+        .action-button:hover { background: #047857; }
+        .error-message { color: var(--danger-red); font-size: 0.875rem; margin-top: 1rem; text-align: center; display: none; }
+        .error-message.active { display: block; }
+        .spinner-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+        .spinner-overlay.active { display: flex; }
+        .spinner { width: 40px; height: 40px; border: 4px solid var(--neutral-200); border-top: 4px solid var(--primary-blue); border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        .emergency-logout-hint {
+            text-align: center;
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--neutral-200);
+            opacity: 0.6;
+            transition: opacity 0.3s ease;
+        }
+
+        .emergency-logout-hint:hover {
+            opacity: 1;
+        }
+
+        .emergency-logout-hint small {
+            color: var(--neutral-700);
+            font-size: 0.75rem;
+        }
+
+        .emergency-logout-hint kbd {
+            background: var(--neutral-200);
+            border: 1px solid var(--neutral-300);
+            border-radius: 3px;
+            padding: 0.1rem 0.3rem;
+            font-size: 0.7rem;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="spinner-overlay" id="spinnerOverlay">
+        <div class="spinner"></div>
+    </div>
+
+    <div class="container">
+        <div class="glass-card">
+            <h1>🔑 Passkey Verification</h1>
+            <p>Complete your authentication with your device's security</p>
+
+            <div class="alert alert-info">
+                <strong>Verifying passkey automatically...</strong> Please use your device's biometric authentication, PIN, or other security method.
+            </div>
+
+            <div id="verification-message" class="alert" style="display: none;"></div>
+
+            <button class="btn btn-success" id="verifyPasskeyBtn" onclick="verifyPasskey()" style="display: none;">
+                <span>🔑 Retry Passkey Verification</span>
+            </button>
+
+            <!-- Universal touch-based emergency logout -->
+            <div class="emergency-touch-area" id="emergencyTouchArea">
+                <div class="touch-indicator">
+                    <span>Touch and hold for emergency logout</span>
+                    <div class="touch-progress" id="touchProgress"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Emergency Logout Modal -->
+    <div class="spinner-overlay" id="emergencyModal" style="z-index: 999;">
+        <div class="glass-card emergency-modal">
+            <h3 style="color: #ef4444; margin-bottom: 1rem;">🚨 Emergency Logout</h3>
+            <p style="margin-bottom: 2rem;">Are you sure you want to logout immediately? This will end your current session.</p>
+            <div style="display: flex; gap: 1rem;">
+                <button class="btn btn-secondary" onclick="hideEmergencyLogout()" style="flex: 1;">
+                    <span>❌ Cancel</span>
+                </button>
+                <a href="{{ url_for('emergency_logout') }}" class="btn btn-danger" style="flex: 1; text-decoration: none;">
+                    <span>🚪 Logout Now</span>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Credits Button -->
+    <button id="creditsBtn" class="credits-btn" title="Credits">
+        <span style="font-size:1.2rem;">ℹ️</span>
+    </button>
+    <!-- Credits Modal -->
+    <div id="creditsModal" class="credits-modal-overlay">
+        <div class="credits-modal">
+            <div class="credits-header">
+                <h3>Project Credits</h3>
+            </div>
+            <div class="credits-body">
+                <p class="credits-author">This project is created by <strong>Hexxal7751</strong></p><br>
+                <div class="credits-contact">
+                    <div><span class="credits-contact-icon">📧</span> <a href="mailto:hexxal.7751@gmail.com">hexxal.7751@gmail.com</a></div>
+                    <div><span class="credits-contact-icon">💻</span> <a href="https://github.com/Hexxal7751/Secure-Login-Testing" target="_blank">github.com/Hexxal7751/Secure-Login-Testing</a></div>
+                    <div><span class="credits-contact-icon">💬</span> <span class="credits-discord-label">Discord Username:</span> <span class="credits-discord-username">hexxal.7751</span></div>
+                    <div><span class="credits-contact-icon">🗨️</span> <span class="credits-discord-label">Discord Discriminator:</span> <span class="credits-discord-discriminator">Hexxal#7751</span></div>
+                </div>
+            </div>
+            <div class="credits-modal-instruction">Click outside this window to close.</div>
+        </div>
+    </div>
+    <script nonce="{{ csp_nonce }}">
+        const verifyButton = document.getElementById('verifyPasskeyBtn');
+        const messageDiv = document.getElementById('verification-message');
+        const spinner = document.getElementById('spinnerOverlay');
+        const csrfToken = "{{ csrf_token }}";
+
+        // Helper function to convert base64url to ArrayBuffer
+        function bufferDecode(value) {
+            const raw = window.atob(value.replace(/-/g, '+').replace(/_/g, '/'));
+            const a = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) {
+                a[i] = raw.charCodeAt(i);
+            }
+            return a;
+        }
+
+        // Helper function to convert ArrayBuffer to base64url
+        function bufferEncode(value) {
+            return window.btoa(String.fromCharCode.apply(null, new Uint8Array(value)))
+                .replace(/\+/g, '-')
+                .replace(/\//g, '_')
+                .replace(/=/g, '');
+        }
+
+        async function verifyPasskey() {
+            verifyButton.disabled = true;
+            spinner.classList.add('active');
+            messageDiv.style.display = 'none';
+            messageDiv.className = 'alert';
+
+            try {
+                console.log('Starting passkey verification...');
+                
+                // 1. Get authentication options from the server
+                const response = await fetch('/passkey/authenticate/begin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken }
+                });
+
+                console.log('Authentication begin response status:', response.status);
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to start passkey verification');
+                }
+
+                const options = await response.json();
+                console.log('Authentication options received');
+                
+                // 2. Prepare options for the browser - decode base64 values
+                options.publicKey.challenge = bufferDecode(options.publicKey.challenge);
+                for (let cred of options.publicKey.allowCredentials) {
+                    cred.id = bufferDecode(cred.id);
+                }
+
+                console.log('Getting passkey with browser API...');
+                
+                // 3. Get the passkey using the browser's API
+                const credential = await navigator.credentials.get({
+                    publicKey: options.publicKey
+                });
+
+                console.log('Passkey retrieved successfully');
+
+                // 4. Prepare the credential to be sent to the server - encode binary data
+                const assertionResponse = {
+                    id: credential.id,
+                    rawId: bufferEncode(credential.rawId),
+                    response: {
+                        authenticatorData: bufferEncode(credential.response.authenticatorData),
+                        clientDataJSON: bufferEncode(credential.response.clientDataJSON),
+                        signature: bufferEncode(credential.response.signature),
+                        userHandle: credential.response.userHandle ? bufferEncode(credential.response.userHandle) : null,
+                    },
+                    type: credential.type,
+                };
+                
+                console.log('Sending credential to server for verification...');
+                
+                // 5. Send the credential to the server to complete authentication
+                const verifyResponse = await fetch('/passkey/authenticate/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+                    body: JSON.stringify(assertionResponse),
+                });
+
+                console.log('Verification response status:', verifyResponse.status);
+                
+                const verifyResult = await verifyResponse.json();
+
+                if (verifyResult.redirect) {
+                    messageDiv.textContent = '🎉 Passkey verified successfully! Redirecting...';
+                    messageDiv.className = 'alert alert-success';
+                    messageDiv.style.display = 'block';
+                    setTimeout(() => {
+                        window.location.href = verifyResult.redirect;
+                    }, 1500);
+                } else {
+                    throw new Error(verifyResult.error || 'Failed to verify passkey');
+                }
+
+            } catch (err) {
+                console.error('Passkey verification failed:', err);
+                messageDiv.textContent = '❌ Passkey verification failed. Please try again.';
+                messageDiv.className = 'alert alert-danger';
+                messageDiv.style.display = 'block';
+                verifyButton.style.display = 'block';
+                verifyButton.disabled = false;
+                verifyButton.onclick = function() {
+                    verifyPasskey();
+                };
+            } finally {
+                spinner.classList.remove('active');
+            }
+        }
+
+        // Auto-start passkey verification when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            verifyPasskey();
+        });
+
+        // Emergency logout functions
+        function showEmergencyLogout() {
+            document.getElementById('emergencyModal').classList.add('active');
+        }
+
+        function hideEmergencyLogout() {
+            document.getElementById('emergencyModal').classList.remove('active');
+        }
+
+        // Touch-based emergency logout
+        const touchArea = document.getElementById('emergencyTouchArea');
+        const touchProgress = document.getElementById('touchProgress');
+        let touchTimer = null;
+        let touchDuration = 0;
+        const requiredHoldTime = 2000; // 2 seconds hold time
+        
+        // Handle touch/mouse events for all devices
+        ['mousedown', 'touchstart'].forEach(eventType => {
+            touchArea.addEventListener(eventType, function(e) {
+                e.preventDefault();
+                touchDuration = 0;
+                touchProgress.style.width = '0%';
+                
+                touchTimer = setInterval(function() {
+                    touchDuration += 100;
+                    const progressPercent = (touchDuration / requiredHoldTime) * 100;
+                    touchProgress.style.width = progressPercent + '%';
+                    
+                    if (touchDuration >= requiredHoldTime) {
+                        clearInterval(touchTimer);
+                        window.location.href = "{{ url_for('emergency_logout') }}";
+                    }
+                }, 100);
+            });
+        });
+        
+        ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(eventType => {
+            touchArea.addEventListener(eventType, function() {
+                clearInterval(touchTimer);
+                touchProgress.style.width = '0%';
+            });
+        });
+
+        // Close modal when clicking outside
+        document.getElementById('emergencyModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                hideEmergencyLogout();
+            }
+        });
+
+        // Credits modal logic
+        const creditsBtn = document.getElementById('creditsBtn');
+        const creditsModal = document.getElementById('creditsModal');
+        creditsBtn.addEventListener('click', function() {
+            creditsModal.classList.add('active');
+        });
+        function closeCredits() {
+            creditsModal.classList.remove('active');
+        }
+        creditsModal.addEventListener('click', function(e) {
+            if (e.target === creditsModal) closeCredits();
+        });
+    </script>
+</body>
+</html>

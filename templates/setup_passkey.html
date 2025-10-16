@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Setup Passkey - Secure Login Testing</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='icon.ico') }}">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style nonce="{{ csp_nonce }}">
+        :root {
+            --primary-blue: #2563eb;
+            --success-green: #059669;
+            --danger-red: #dc2626;
+            --warning-orange: #d97706;
+            --neutral-50: #f9fafb;
+            --neutral-100: #f3f4f6;
+            --neutral-200: #e5e7eb;
+            --neutral-700: #374151;
+            --neutral-800: #1f2937;
+            --neutral-900: #111827;
+        }
+
+        body {
+            background-color: var(--neutral-50);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .setup-container {
+            max-width: 480px;
+            width: 100%;
+            padding: 0 1rem;
+        }
+
+        .setup-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+            padding: 2rem;
+        }
+
+        .setup-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .setup-title {
+            color: var(--neutral-900);
+            font-weight: 600;
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .setup-subtitle {
+            color: var(--neutral-700);
+            font-size: 0.875rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .security-notice {
+            background: var(--warning-orange);
+            color: white;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            font-size: 0.875rem;
+        }
+
+        .passkey-info {
+            background: var(--neutral-100);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .info-title {
+            color: var(--neutral-900);
+            font-weight: 600;
+            font-size: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .info-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .info-list li {
+            color: var(--neutral-700);
+            font-size: 0.875rem;
+            margin-bottom: 0.5rem;
+            padding-left: 1.5rem;
+            position: relative;
+        }
+
+        .info-list li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: var(--success-green);
+            font-weight: bold;
+        }
+
+        .action-button {
+            width: 100%;
+            padding: 0.75rem;
+            border-radius: 8px;
+            font-weight: 500;
+            font-size: 0.875rem;
+            transition: all 0.2s ease;
+            border: none;
+            cursor: pointer;
+            background: var(--success-green);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .action-button:hover {
+            background: #047857;
+        }
+
+        .action-button:disabled {
+            background: var(--neutral-200);
+            color: var(--neutral-700);
+            cursor: not-allowed;
+        }
+
+        .error-message {
+            color: var(--danger-red);
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+            text-align: center;
+            display: none;
+        }
+
+        .success-message {
+            color: var(--success-green);
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+            text-align: center;
+            display: none;
+        }
+
+        .success-message.active, .error-message.active {
+            display: block;
+        }
+
+        /* Loading spinner styles */
+        .spinner-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .spinner-overlay.active {
+            display: flex;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid var(--neutral-200);
+            border-top: 4px solid var(--primary-blue);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Dark mode styles */
+        body.dark-theme {
+            background-color: var(--neutral-900);
+        }
+
+        .dark-theme .setup-card {
+            background: var(--neutral-800);
+        }
+
+        .dark-theme .setup-title {
+            color: white;
+        }
+
+        .dark-theme .setup-subtitle {
+            color: var(--neutral-200);
+        }
+
+        .dark-theme .passkey-info {
+            background: var(--neutral-700);
+        }
+
+        .dark-theme .info-title {
+            color: white;
+        }
+
+        .dark-theme .info-list li {
+            color: var(--neutral-200);
+        }
+
+        .dark-theme .spinner {
+            border-color: var(--neutral-700);
+            border-top-color: var(--primary-blue);
+        }
+
+        .emergency-logout-hint {
+            text-align: center;
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--neutral-200);
+            opacity: 0.6;
+            transition: opacity 0.3s ease;
+        }
+
+        .emergency-logout-hint:hover {
+            opacity: 1;
+        }
+
+        .emergency-logout-hint small {
+            color: var(--neutral-700);
+            font-size: 0.75rem;
+        }
+
+        .emergency-logout-hint kbd {
+            background: var(--neutral-200);
+            border: 1px solid var(--neutral-300);
+            border-radius: 3px;
+            padding: 0.1rem 0.3rem;
+            font-size: 0.7rem;
+            font-family: monospace;
+        }
+
+        .dark-theme .emergency-logout-hint {
+            border-top-color: var(--neutral-700);
+        }
+
+        .dark-theme .emergency-logout-hint small {
+            color: var(--neutral-300);
+        }
+
+        .dark-theme .emergency-logout-hint kbd {
+            background: var(--neutral-700);
+            border-color: var(--neutral-600);
+            color: var(--neutral-200);
+        }
+    </style>
+</head>
+<body>
+    <div class="spinner-overlay" id="spinnerOverlay">
+        <div class="spinner"></div>
+    </div>
+
+    <div class="container">
+        <div class="glass-card">
+            <h1>🔐 Setup Passkey Required</h1>
+            <p>Setting up your passkey automatically...</p>
+
+            <div class="alert alert-warning">
+                <strong>Security Requirement:</strong> Passkeys are mandatory for all users to ensure maximum account security.
+            </div>
+
+            <div class="authenticators-section">
+                <h3 class="authenticators-title">Why Passkeys?</h3>
+                <ul style="list-style: none; padding: 0; margin: 0; text-align: left;">
+                    <li style="color: var(--white); margin-bottom: 0.5rem; padding-left: 1.5rem; position: relative;">
+                        <span style="position: absolute; left: 0; color: #10b981; font-weight: bold;">✓</span>
+                        Phishing-resistant authentication
+                    </li>
+                    <li style="color: var(--white); margin-bottom: 0.5rem; padding-left: 1.5rem; position: relative;">
+                        <span style="position: absolute; left: 0; color: #10b981; font-weight: bold;">✓</span>
+                        No passwords to remember or type
+                    </li>
+                    <li style="color: var(--white); margin-bottom: 0.5rem; padding-left: 1.5rem; position: relative;">
+                        <span style="position: absolute; left: 0; color: #10b981; font-weight: bold;">✓</span>
+                        Uses your device's built-in security
+                    </li>
+                    <li style="color: var(--white); margin-bottom: 0.5rem; padding-left: 1.5rem; position: relative;">
+                        <span style="position: absolute; left: 0; color: #10b981; font-weight: bold;">✓</span>
+                        Works across all your devices
+                    </li>
+                    <li style="color: var(--white); margin-bottom: 0.5rem; padding-left: 1.5rem; position: relative;">
+                        <span style="position: absolute; left: 0; color: #10b981; font-weight: bold;">✓</span>
+                        Industry-standard security protocol
+                    </li>
+                </ul>
+            </div>
+
+            <div id="setup-message" class="alert" style="display: none;"></div>
+
+            <button class="btn btn-success" id="setupPasskeyBtn" onclick="setupPasskey()" style="display: none;">
+                <span>🔐 Retry Passkey Setup</span>
+            </button>
+
+            <!-- Universal touch-based emergency logout -->
+            <div class="emergency-touch-area" id="emergencyTouchArea">
+                <div class="touch-indicator">
+                    <span>Touch and hold for emergency logout</span>
+                    <div class="touch-progress" id="touchProgress"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Credits Button -->
+    <button id="creditsBtn" class="credits-btn" title="Credits">
+        <span style="font-size:1.2rem;">ℹ️</span>
+    </button>
+    <!-- Credits Modal -->
+    <div id="creditsModal" class="credits-modal-overlay">
+        <div class="credits-modal">
+            <div class="credits-header">
+                <h3>Project Credits</h3>
+            </div>
+            <div class="credits-body">
+                <p class="credits-author">This project is created by <strong>Hexxal7751</strong></p><br>
+                <div class="credits-contact">
+                    <div><span class="credits-contact-icon">📧</span> <a href="mailto:hexxal.7751@gmail.com">hexxal.7751@gmail.com</a></div>
+                    <div><span class="credits-contact-icon">💻</span> <a href="https://github.com/Hexxal7751/Secure-Login-Testing" target="_blank">github.com/Hexxal7751/Secure-Login-Testing</a></div>
+                    <div><span class="credits-contact-icon">💬</span> <span class="credits-discord-label">Discord Username:</span> <span class="credits-discord-username">hexxal.7751</span></div>
+                    <div><span class="credits-contact-icon">🗨️</span> <span class="credits-discord-label">Discord Discriminator:</span> <span class="credits-discord-discriminator">Hexxal#7751</span></div>
+                </div>
+            </div>
+            <div class="credits-modal-instruction">Click outside this window to close.</div>
+        </div>
+    </div>
+
+    <script nonce="{{ csp_nonce }}">
+        const setupButton = document.getElementById('setupPasskeyBtn');
+        const messageDiv = document.getElementById('setup-message');
+        const spinner = document.getElementById('spinnerOverlay');
+        const csrfToken = "{{ csrf_token }}";
+
+        // Helper function to convert base64url to ArrayBuffer
+        function bufferDecode(value) {
+            const raw = window.atob(value.replace(/-/g, '+').replace(/_/g, '/'));
+            const a = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) {
+                a[i] = raw.charCodeAt(i);
+            }
+            return a;
+        }
+
+        // Helper function to convert ArrayBuffer to base64url
+        function bufferEncode(value) {
+            return window.btoa(String.fromCharCode.apply(null, new Uint8Array(value)))
+                .replace(/\+/g, '-')
+                .replace(/\//g, '_')
+                .replace(/=/g, '');
+        }
+
+        async function setupPasskey() {
+            setupButton.disabled = true;
+            spinner.classList.add('active');
+            messageDiv.style.display = 'none';
+            messageDiv.className = 'alert';
+
+            try {
+                console.log('Starting passkey setup...');
+                
+                // 1. Get registration options from the server
+                const response = await fetch('/passkey/register/begin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken }
+                });
+
+                console.log('Registration begin response status:', response.status);
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to start passkey setup');
+                }
+
+                const options = await response.json();
+                console.log('Registration options received');
+                
+                // 2. Prepare options for the browser - decode base64 values
+                options.publicKey.challenge = bufferDecode(options.publicKey.challenge);
+                options.publicKey.user.id = bufferDecode(options.publicKey.user.id);
+                if (options.publicKey.excludeCredentials) {
+                    for (let cred of options.publicKey.excludeCredentials) {
+                        cred.id = bufferDecode(cred.id);
+                    }
+                }
+
+                console.log('Creating passkey with browser API...');
+                
+                // 3. Create the passkey using the browser's API
+                const credential = await navigator.credentials.create({
+                    publicKey: options.publicKey
+                });
+
+                console.log('Passkey created successfully');
+
+                // 4. Prepare the credential to be sent to the server - encode binary data
+                const attestationResponse = {
+                    id: credential.id,
+                    rawId: bufferEncode(credential.rawId),
+                    response: {
+                        attestationObject: bufferEncode(credential.response.attestationObject),
+                        clientDataJSON: bufferEncode(credential.response.clientDataJSON),
+                    },
+                    type: credential.type,
+                };
+                
+                console.log('Sending credential to server for verification...');
+                
+                // 5. Send the new credential to the server to complete registration
+                const verifyResponse = await fetch('/passkey/register/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+                    body: JSON.stringify(attestationResponse),
+                });
+
+                console.log('Verification response status:', verifyResponse.status);
+                
+                const verifyResult = await verifyResponse.json();
+
+                if (verifyResult.success) {
+                    messageDiv.textContent = '🎉 Passkey created successfully! Redirecting...';
+                    messageDiv.className = 'alert alert-success';
+                    messageDiv.style.display = 'block';
+                    setTimeout(() => {
+                        window.location.href = "{{ url_for('dashboard') }}";
+                    }, 1500);
+                } else {
+                    throw new Error(verifyResult.error || 'Failed to verify passkey');
+                }
+
+            } catch (err) {
+                console.error('Passkey setup failed:', err);
+                messageDiv.textContent = `❌ Passkey setup failed: ${err.message}`;
+                messageDiv.className = 'alert alert-danger';
+                messageDiv.style.display = 'block';
+                setupButton.style.display = 'block';
+                setupButton.disabled = false;
+            } finally {
+                spinner.classList.remove('active');
+            }
+        }
+
+        // Auto-start passkey setup when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            setupPasskey();
+        });
+
+        // Touch-based emergency logout
+    const touchArea = document.getElementById('emergencyTouchArea');
+    const touchProgress = document.getElementById('touchProgress');
+    let touchTimer = null;
+    let touchDuration = 0;
+    const requiredHoldTime = 2000; // 2 seconds hold time
+    
+    // Handle touch/mouse events for all devices
+    ['mousedown', 'touchstart'].forEach(eventType => {
+        touchArea.addEventListener(eventType, function(e) {
+            e.preventDefault();
+            touchDuration = 0;
+            touchProgress.style.width = '0%';
+            
+            touchTimer = setInterval(function() {
+                touchDuration += 100;
+                const progressPercent = (touchDuration / requiredHoldTime) * 100;
+                touchProgress.style.width = progressPercent + '%';
+                
+                if (touchDuration >= requiredHoldTime) {
+                    clearInterval(touchTimer);
+                    window.location.href = "{{ url_for('emergency_logout') }}";
+                }
+            }, 100);
+        });
+    });
+    
+    ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(eventType => {
+        touchArea.addEventListener(eventType, function() {
+            clearInterval(touchTimer);
+            touchProgress.style.width = '0%';
+        });
+    });
+
+        // Credits modal logic
+        const creditsBtn = document.getElementById('creditsBtn');
+        const creditsModal = document.getElementById('creditsModal');
+        creditsBtn.addEventListener('click', function() {
+            creditsModal.classList.add('active');
+        });
+        function closeCredits() {
+            creditsModal.classList.remove('active');
+        }
+        creditsModal.addEventListener('click', function(e) {
+            if (e.target === creditsModal) closeCredits();
+        });
+    </script>
+</body>
+</html>

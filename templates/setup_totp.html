@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Setup 2FA - Secure Login Testing</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='icon.ico') }}">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style nonce="{{ csp_nonce }}">
+        :root {
+            --primary-blue: #2563eb;
+            --success-green: #059669;
+            --danger-red: #dc2626;
+            --neutral-50: #f9fafb;
+            --neutral-100: #f3f4f6;
+            --neutral-200: #e5e7eb;
+            --neutral-700: #374151;
+            --neutral-800: #1f2937;
+            --neutral-900: #111827;
+        }
+
+        body {
+            background-color: var(--neutral-50);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            max-width: 480px;
+            width: 100%;
+            padding: 0 1rem;
+        }
+
+        .glass-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+            padding: 2rem;
+        }
+
+        .glass-card h1 {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .qr-container {
+            text-align: center;
+            margin-bottom: 2rem;
+            padding: 1.5rem;
+            background: var(--neutral-50);
+            border-radius: 8px;
+        }
+
+        .qr-code {
+            max-width: 200px;
+            margin: 1rem auto;
+            padding: 1rem;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .manual-key {
+            font-family: monospace;
+            font-size: 0.875rem;
+            color: var(--neutral-700);
+            background: var(--neutral-100);
+            padding: 0.75rem;
+            border-radius: 6px;
+            margin: 1rem 0;
+            word-break: break-all;
+        }
+
+        .authenticators-section {
+            text-align: center;
+            margin-bottom: 2rem;
+            padding: 1.5rem;
+            background: var(--neutral-50);
+            border-radius: 8px;
+        }
+
+        .authenticators-title {
+            color: var(--neutral-900);
+            font-weight: 600;
+            font-size: 1.25rem;
+            margin-bottom: 1rem;
+        }
+
+        .authenticators-grid {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 1rem;
+        }
+
+        .authenticators-grid img {
+            max-width: 100px;
+            height: auto;
+            border-radius: 8px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .authenticators-note {
+            color: var(--neutral-700);
+            font-size: 0.875rem;
+            margin-top: 1rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: var(--neutral-700);
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--neutral-200);
+            border-radius: 8px;
+            font-size: 0.875rem;
+            transition: all 0.2s ease;
+            text-align: center;
+            letter-spacing: 0.5em;
+            font-family: monospace;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary-blue);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 0.75rem;
+            border-radius: 8px;
+            font-weight: 500;
+            font-size: 0.875rem;
+            transition: all 0.2s ease;
+            border: none;
+            cursor: pointer;
+        }
+
+        .btn-success {
+            background: var(--primary-blue);
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #1d4ed8;
+        }
+
+        .btn-secondary {
+            background: var(--neutral-200);
+            color: var(--neutral-700);
+        }
+
+        .btn-secondary:hover {
+            background: var(--neutral-300);
+        }
+
+        .alert {
+            color: var(--danger-red);
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+            text-align: center;
+        }
+
+        .spinner-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .spinner-overlay.active {
+            display: flex;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid var(--neutral-200);
+            border-top: 4px solid var(--primary-blue);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .dark-theme .glass-card {
+            background: var(--neutral-800);
+        }
+
+        .dark-theme .authenticators-section {
+            background: var(--neutral-800);
+        }
+
+        .dark-theme .authenticators-title {
+            color: white;
+        }
+
+        .dark-theme .authenticators-note {
+            color: var(--neutral-200);
+        }
+
+        .dark-theme .form-control {
+            background: var(--neutral-700);
+            border-color: var(--neutral-600);
+            color: white;
+        }
+
+        .dark-theme .form-control:focus {
+            border-color: var(--primary-blue);
+            background: var(--neutral-700);
+        }
+
+        .dark-theme .btn-success {
+            background: var(--primary-blue);
+        }
+
+        .dark-theme .btn-success:hover {
+            background: #1d4ed8;
+        }
+
+        .dark-theme .btn-secondary {
+            background: var(--neutral-700);
+            color: var(--neutral-200);
+        }
+
+        .dark-theme .btn-secondary:hover {
+            background: var(--neutral-600);
+        }
+
+        .dark-theme .alert {
+            color: var(--neutral-200);
+        }
+
+        .dark-theme .spinner {
+            border-color: var(--neutral-700);
+            border-top-color: var(--primary-blue);
+        }
+    </style>
+</head>
+<body>
+    <div class="spinner-overlay" id="spinnerOverlay">
+        <div class="spinner"></div>
+    </div>
+
+    <div class="container">
+        <div class="glass-card">
+            <h1>🔐 Setup Two-Factor Authentication</h1>
+            <p>Scan the QR code with your authenticator app or enter the key manually</p>
+
+            <div class="qr-container">
+                <img src="{{ qr_code }}" alt="QR Code" class="qr-code">
+                <div class="manual-key">{{ secret_key }}</div>
+            </div>
+
+            <div class="authenticators-section">
+                <h4 class="authenticators-title">Compatible Authenticator Apps</h4>
+                <div class="authenticators-grid">
+                    <img src="{{ url_for('static', filename='auth/google_authenticator.png') }}" alt="Google Authenticator" title="Google Authenticator">
+                    <img src="{{ url_for('static', filename='auth/authy.png') }}" alt="Authy" title="Authy">
+                    <img src="{{ url_for('static', filename='auth/microsoft_authenticator.jpeg') }}" alt="Microsoft Authenticator" title="Microsoft Authenticator">
+                    <img src="{{ url_for('static', filename='auth/1password.png') }}" alt="1Password" title="1Password">
+                    <img src="{{ url_for('static', filename='auth/bitwarden.png') }}" alt="Bitwarden" title="Bitwarden">
+                    <img src="{{ url_for('static', filename='auth/lastpass_authenticator.png') }}" alt="LastPass Authenticator" title="LastPass Authenticator">
+                    <img src="{{ url_for('static', filename='auth/duo_mobile.png') }}" alt="Duo Mobile" title="Duo Mobile">
+                    <img src="{{ url_for('static', filename='auth/freeotp.jpeg') }}" alt="FreeOTP" title="FreeOTP">
+                    <img src="{{ url_for('static', filename='auth/otp_auth.jpeg') }}" alt="OTP Auth" title="OTP Auth">
+                </div>
+                <p class="authenticators-note">and much more...</p>
+            </div>
+
+            <form method="POST">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <div class="form-group">
+                    <label class="form-label" for="totp_code">Verification Code</label>
+                    <input type="text" 
+                           name="totp_code" 
+                           id="totp_code"
+                           class="form-control" 
+                           placeholder="000000" 
+                           required 
+                           pattern="\d{6}"
+                           maxlength="6"
+                           autocomplete="one-time-code">
+                </div>
+
+                {% if error %}
+                    <div class="alert alert-danger">{{ error }}</div>
+                {% endif %}
+
+                <button type="submit" class="btn btn-success">
+                    <span>✅ Verify & Complete Setup</span>
+                </button>
+                <!-- Universal Cancel Setup link/button -->
+                <a href="#" id="universalCancelLink" class="btn btn-secondary desktop-only" style="margin-top:0.5rem;">❌ Cancel Setup</a>
+                <div class="mobile-cancel mobile-only" style="text-align:center; margin-top:1.5rem;">
+                    <a href="#" id="mobileCancelLink" style="color: #ef4444; font-size: 0.95rem; text-decoration: underline; opacity: 0.8;">Cancel Setup</a>
+                </div>
+                
+                <!-- Universal touch-based emergency logout -->
+                <div class="emergency-touch-area" id="emergencyTouchArea">
+                    <div class="touch-indicator">
+                        <span>Touch and hold for emergency logout</span>
+                        <div class="touch-progress" id="touchProgress"></div>
+                    </div>
+                </div>
+                
+                <!-- Credits button -->
+                <button id="creditsBtn" class="floating-credits-btn">
+                    <span>ℹ️</span>
+                </button>
+                
+                <!-- Credits modal -->
+                <div id="creditsModal" class="modal">
+                    <div class="modal-content">
+                        <span class="close-btn" id="closeCreditsModal">&times;</span>
+                        <h2>Credits</h2>
+                        <p>Secure Login Testing</p>
+                        <p>Version 3.0</p>
+                        <p>Created by Vedant</p>
+                        <p>Enhanced security features and UI improvements</p>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Floating Credits Button -->
+    <button id="creditsBtn" class="credits-btn" title="Credits">
+        <span style="font-size:1.2rem;">ℹ️</span>
+    </button>
+    <!-- Credits Modal -->
+    <div id="creditsModal" class="credits-modal-overlay">
+        <div class="credits-modal">
+            <div class="credits-header">
+                <h3>Project Credits</h3>
+            </div>
+            <div class="credits-body">
+                <p class="credits-author">This project is created by <strong>Hexxal7751</strong></p><br>
+                <div class="credits-contact">
+                    <div><span class="credits-contact-icon">📧</span> <a href="mailto:hexxal.7751@gmail.com">hexxal.7751@gmail.com</a></div>
+                    <div><span class="credits-contact-icon">💻</span> <a href="https://github.com/Hexxal7751/Secure-Login-Testing" target="_blank">github.com/Hexxal7751/Secure-Login-Testing</a></div>
+                    <div><span class="credits-contact-icon">💬</span> <span class="credits-discord-label">Discord Username:</span> <span class="credits-discord-username">hexxal.7751</span></div>
+                    <div><span class="credits-contact-icon">🗨️</span> <span class="credits-discord-label">Discord Discriminator:</span> <span class="credits-discord-discriminator">Hexxal#7751</span></div>
+                </div>
+            </div>
+            <div class="credits-modal-instruction">Click outside this window to close.</div>
+        </div>
+    </div>
+    <script nonce="{{ csp_nonce }}">
+        // Auto-format the code input
+        const codeInput = document.querySelector('input[name="totp_code"]');
+        if (codeInput) {
+            codeInput.addEventListener('input', function(e) {
+                this.value = this.value.replace(/[^0-9]/g, '').slice(0, 6);
+            });
+        }
+
+        // Show spinner on form submit
+        document.querySelector('form').addEventListener('submit', function() {
+            document.getElementById('spinnerOverlay').classList.add('active');
+        });
+
+        // Add floating animation to form elements
+        document.addEventListener('DOMContentLoaded', function() {
+            const inputs = document.querySelectorAll('.form-control');
+            inputs.forEach((input, index) => {
+                input.style.animationDelay = `${index * 0.1}s`;
+                input.style.animation = 'slideInUp 0.6s ease-out forwards';
+            });
+        });
+
+        // Mobile cancel setup link handler
+    const mobileCancelLink = document.getElementById('mobileCancelLink');
+    if (mobileCancelLink) {
+        mobileCancelLink.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (confirm('Are you sure you want to cancel setup? This will remove your account and you will need to register again.')) {
+                document.getElementById('spinnerOverlay').classList.add('active');
+                window.location.href = "{{ url_for('cancel_setup') }}";
+            }
+        });
+    }
+    
+    // Touch-based emergency logout
+    const touchArea = document.getElementById('emergencyTouchArea');
+    const touchProgress = document.getElementById('touchProgress');
+    let touchTimer = null;
+    let touchDuration = 0;
+    const requiredHoldTime = 2000; // 2 seconds hold time
+    
+    // Handle touch/mouse events for all devices
+    ['mousedown', 'touchstart'].forEach(eventType => {
+        touchArea.addEventListener(eventType, function(e) {
+            e.preventDefault();
+            touchDuration = 0;
+            touchProgress.style.width = '0%';
+            
+            touchTimer = setInterval(function() {
+                touchDuration += 100;
+                const progressPercent = (touchDuration / requiredHoldTime) * 100;
+                touchProgress.style.width = progressPercent + '%';
+                
+                if (touchDuration >= requiredHoldTime) {
+                    clearInterval(touchTimer);
+                    window.location.href = "{{ url_for('emergency_logout') }}";
+                }
+            }, 100);
+        });
+    });
+    
+    ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(eventType => {
+        touchArea.addEventListener(eventType, function() {
+            clearInterval(touchTimer);
+            touchProgress.style.width = '0%';
+        });
+    });
+    
+    // Credits modal functionality
+    const creditsBtn = document.getElementById('creditsBtn');
+    const creditsModal = document.getElementById('creditsModal');
+    const closeCreditsModal = document.getElementById('closeCreditsModal');
+    
+    creditsBtn.addEventListener('click', function() {
+        creditsModal.style.display = 'block';
+    });
+    
+    closeCreditsModal.addEventListener('click', function() {
+        creditsModal.style.display = 'none';
+    });
+    
+    window.addEventListener('click', function(event) {
+        if (event.target == creditsModal) {
+            creditsModal.style.display = 'none';
+        }
+    });
+
+        // Desktop universal cancel setup link handler
+        const universalCancelLink = document.getElementById('universalCancelLink');
+        if (universalCancelLink) {
+            universalCancelLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (confirm('Are you sure you want to cancel setup? This will remove your account and you will need to register again.')) {
+                    document.getElementById('spinnerOverlay').classList.add('active');
+                    window.location.href = "{{ url_for('cancel_setup') }}";
+                }
+            });
+        }
+    </script>
+</body>
+</html>
