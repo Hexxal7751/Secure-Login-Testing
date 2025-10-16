@@ -308,8 +308,6 @@ def create_users_table():
             );
         """)
         conn.commit()
-    finally:
-        reset_connection_context(conn)
         
         # Add last_login column if it doesn't exist
         cur.execute("""
@@ -355,7 +353,7 @@ def create_users_table():
     except Exception as e:
         print(f"Error creating/updating tables: {e}")
     finally:
-        conn.close()
+        reset_connection_context(conn)
 
 def get_user(username):
     # For initial login, we don't have a user_id yet, so we use admin access
