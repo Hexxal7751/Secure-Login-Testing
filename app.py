@@ -292,8 +292,8 @@ def reset_connection_context(conn):
 
 def create_users_table():
     conn = get_db_connection()
-    cur = conn.cursor()
     try:
+        cur = conn.cursor()
         # Create table if it doesn't exist
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
