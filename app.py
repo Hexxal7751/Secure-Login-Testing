@@ -483,8 +483,8 @@ def login():
                 user = get_user(username)
 
                 if user:
-                    # Check for account lockout
-                    if user['account_locked_until'] and user['account_locked_until'] > datetime.now():
+                    # Check for account lockout - safely check if the field exists
+                    if user.get('account_locked_until') and user['account_locked_until'] > datetime.now():
                         error = "Account locked due to too many failed login attempts. Please try again later."
                     elif bcrypt.checkpw(password, user["password"].encode("utf-8")):
                         # Reset failed attempts on successful login
