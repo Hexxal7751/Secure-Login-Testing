@@ -1051,10 +1051,7 @@ def emergency_logout():
     response.headers['Expires'] = '0'
     return response
 
-@app.route("/keepalive")
-def keepalive():
-    """Simple endpoint to keep the service alive"""
-    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
+
 
 @app.errorhandler(404)
 def page_not_found(e):
