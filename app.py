@@ -300,7 +300,6 @@ def create_users_table():
                 id SERIAL PRIMARY KEY,
                 username VARCHAR(100) UNIQUE NOT NULL,
                 password TEXT,
-                secret TEXT,
                 passkey_enabled BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 failed_login_attempts INTEGER DEFAULT 0,
@@ -308,6 +307,20 @@ def create_users_table():
             );
         """)
         conn.commit()
+        
+        # Add secret column if it doesn't exist
+        cur.execute("""
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (
+                    SELECT 1 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'users' AND column_name = 'secret'
+                ) THEN
+                    ALTER TABLE users ADD COLUMN secret TEXT;
+                END IF;
+            END $$;
+        """)
         
         # Add last_login column if it doesn't exist
         cur.execute("""
@@ -537,11 +550,13 @@ def register():
             else:
                 hashed_password = bcrypt.hashpw(password, bcrypt.gensalt())
                 conn = get_db_connection()
-                cur = conn.cursor()
-                cur.execute("INSERT INTO users (username, password, secret) VALUES (%s, %s, NULL)", 
-                            (username, hashed_password.decode("utf-8")))
-                conn.commit()
-                conn.close()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("INSERT INTO users (username, password) VALUES (%s, %s)", 
+                                (username, hashed_password.decode("utf-8")))
+                    conn.commit()
+                finally:
+                    reset_connection_context(conn)
 
                 return redirect(url_for("login"))
 
@@ -1035,6 +1050,19 @@ def emergency_logout():
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'
     return response
+
+@app.route("/keepalive")
+def keepalive():
+    """Simple endpoint to keep the service alive"""
+    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
+
+@app.errorhandler(404)
+def page_not_found(e):
+    return render_template('404.html'), 404
+
+@app.errorhandler(500)
+def server_error(e):
+    return render_template('500.html'), 500
 
 if __name__ == "__main__":
     create_users_table()
