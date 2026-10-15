@@ -317,7 +317,6 @@
             <button
                 class="btn btn-success"
                 id="setupPasskeyBtn"
-                onclick="setupPasskey()"
                 disabled>
                 <span>🔐 Preparing Passkey Setup...</span>
             </button>
@@ -637,6 +636,8 @@
                 spinner.classList.remove('active');
             }
         }
+      
+        setupButton.addEventListener('click', setupPasskey);
 
         // Prepare options on page load, but wait for a user tap to create the passkey.
         document.addEventListener('DOMContentLoaded', function() {
