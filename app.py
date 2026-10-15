@@ -24,11 +24,13 @@ from webauthn import (
     generate_registration_options,
     verify_registration_response,
     generate_authentication_options,
-    verify_authentication_response
+    verify_authentication_response,
+    options_to_json,
 )
 from webauthn.helpers.structs import (
     AuthenticatorSelectionCriteria,
     UserVerificationRequirement,
+    ResidentKeyRequirement,
     RegistrationCredential,
     AuthenticationCredential,
     PublicKeyCredentialDescriptor,
@@ -597,7 +599,8 @@ def passkey_register_begin():
             user_name=user['username'],
             user_display_name=user['username'],
             authenticator_selection=AuthenticatorSelectionCriteria(
-                user_verification=UserVerificationRequirement.PREFERRED
+                resident_key=ResidentKeyRequirement.PREFERRED,
+                user_verification=UserVerificationRequirement.PREFERRED,
             )
         )
 
@@ -606,28 +609,7 @@ def passkey_register_begin():
         session['passkey_user_id'] = str(user['id'])
 
         return jsonify({
-            "publicKey": {
-                "challenge": base64.b64encode(options.challenge).decode('utf-8'),
-                "rp": {
-                    "name": options.rp.name,
-                    "id": options.rp.id
-                },
-                "user": {
-                    "id": base64.b64encode(options.user.id).decode('utf-8'),
-                    "name": options.user.name,
-                    "displayName": options.user.display_name
-                },
-                "pubKeyCredParams": [
-                    {"type": "public-key", "alg": -7},  # ES256
-                    {"type": "public-key", "alg": -257}  # RS256
-                ],
-                "timeout": 60000,
-                "attestation": "direct",
-                "authenticatorSelection": {
-                    "authenticatorAttachment": "platform",
-                    "userVerification": "preferred"
-                }
-            }
+          "publicKey": json.loads(options_to_json(options))
         })
 
     except Exception as e:
@@ -724,18 +706,7 @@ def passkey_authenticate_begin():
         session['passkey_user_id'] = str(user['id'])
 
         return jsonify({
-            "publicKey": {
-                "challenge": base64.b64encode(options.challenge).decode('utf-8'),
-                "timeout": 60000,
-                "rpId": options.rp_id,
-                "allowCredentials": [
-                    {
-                        "id": base64.b64encode(base64url_to_bytes(passkey['credential_id'])).decode('utf-8'),
-                        "type": "public-key"
-                    } for passkey in passkeys
-                ],
-                "userVerification": "preferred"
-            }
+          "publicKey": json.loads(options_to_json(options))
         })
 
     except Exception as e:
