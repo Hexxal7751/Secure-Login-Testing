@@ -606,30 +606,32 @@
                     window.location.href = "{{ url_for('dashboard') }}";
                 }, 1200);
 
-            } catch (error) {
-                console.error('Passkey setup failed:', error);
+            }   catch (error) {
+                    console.error('Passkey setup failed:', error);
 
-                let message = error.message ||
-                    'An unexpected error occurred.';
+                    let message = error.message ||
+                        'An unexpected error occurred.';
 
-                if (error.name === 'NotAllowedError') {
-                    message =
-                        'Passkey creation was cancelled or not allowed. ' +
-                        'Please tap Create Passkey and try again.';
-                } else if (error.name === 'SecurityError') {
-                    message =
-                        'The website origin is not permitted to create this passkey. ' +
-                        'Check your RP_ID and ORIGIN settings.';
-                }
+                    if (error.name === 'NotAllowedError') {
+                        message =
+                            'Passkey creation was cancelled or not allowed. ' +
+                            'Please tap Create Passkey and try again.';
+                    } else if (error.name === 'SecurityError') {
+                        message =
+                            'The website origin is not permitted to create this passkey. ' +
+                            'Check your RP_ID and ORIGIN settings.';
+                    }
 
-                showSetupMessage(
-                    'Passkey setup failed: ' + message,
-                    'danger'
-                );
+                    // Refresh the registration challenge for another attempt.
+                    registrationOptions = null;
+                    await preparePasskeySetup();
 
-                // Fetch a fresh challenge for the next attempt.
-                registrationOptions = null;
-                await preparePasskeySetup();
+                    // Display the original failure AFTER refreshing the options.
+                    // This prevents the preparation message from hiding the error.
+                    showSetupMessage(
+                        'Passkey setup failed: ' + message,
+                        'danger'
+                    );
 
             } finally {
                 setupInProgress = false;
