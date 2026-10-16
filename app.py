@@ -62,7 +62,7 @@ app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 # WebAuthn configuration
 RP_ID = os.getenv("RP_ID", "localhost")  # Your domain
 RP_NAME = "Secure Login Testing"
-ORIGIN = os.getenv("ORIGIN", "http://localhost:5000")
+ORIGIN = os.getenv("ORIGIN", "http://localhost:5000").strip().rstrip("/")
 
 # Flask-Limiter for Rate Limiting and Anti-Brute Force Protection
 limiter = Limiter(
