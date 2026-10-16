@@ -174,7 +174,6 @@
             <button
                 class="btn btn-success"
                 id="verifyPasskeyBtn"
-                onclick="verifyPasskey()"
                 disabled>
                 <span>🔑 Preparing Passkey Verification...</span>
             </button>
@@ -541,6 +540,10 @@
                 spinner.classList.remove('active');
             }
         }
+
+        // Bind the verification button using JavaScript.
+        // This works with the site's Content Security Policy.
+        verifyButton.addEventListener('click', verifyPasskey);
 
         // Prepare options on page load, but wait for a user tap to verify.
         document.addEventListener('DOMContentLoaded', function() {
