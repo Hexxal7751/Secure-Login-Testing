@@ -62,7 +62,7 @@ app.config["SESSION_REFRESH_EACH_REQUEST"] = True
 # WebAuthn configuration
 RP_ID = os.getenv("RP_ID", "localhost")  # Your domain
 RP_NAME = "Secure Login Testing"
-ORIGIN = os.getenv("ORIGIN", "http://localhost:5000").strip().rstrip("/")
+ORIGIN = os.getenv("ORIGIN", "http://localhost:10000").strip().rstrip("/")
 
 # Flask-Limiter for Rate Limiting and Anti-Brute Force Protection
 limiter = Limiter(
@@ -694,8 +694,7 @@ def passkey_authenticate_begin():
             rp_id=RP_ID,
             allow_credentials=[
                 PublicKeyCredentialDescriptor(
-                    id=base64url_to_bytes(passkey['credential_id']),
-                    type="public-key"
+                    id=base64url_to_bytes(passkey['credential_id'])
                 ) for passkey in passkeys
             ],
             user_verification=UserVerificationRequirement.PREFERRED
@@ -1036,4 +1035,4 @@ if __name__ == "__main__":
     create_users_table()
     # Disable debug mode in production
     debug_mode = os.getenv("FLASK_ENV") == "development"
-    app.run(host="0.0.0.0", port=5000, debug=debug_mode)
+    app.run(host="0.0.0.0", port=10000, debug=debug_mode)
