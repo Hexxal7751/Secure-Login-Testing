@@ -1,0 +1,44 @@
+{# Shared template helpers: icons, stepper, form fields, one-time-code form #}
+{% macro icon(name, cls='') -%}
+<svg class="ic {{ cls }}" aria-hidden="true"><use href="#i-{{ name }}"/></svg>
+{%- endmacro %}
+
+{% macro stepper(current) %}
+<ol class="stepper" data-step="{{ current }}" aria-label="Sign-in progress">
+  {% for n, label in [(1, 'Password'), (2, 'Authenticator'), (3, 'Passkey')] %}
+  <li class="step {{ 'done' if current > n else ('now' if current == n else '') }}"{% if current == n %} aria-current="step"{% endif %}>
+    <span class="dot">{% if current > n %}{{ icon('check') }}{% else %}{{ n }}{% endif %}</span>
+    <span>{{ label }}</span>
+  </li>
+  {% endfor %}
+</ol>
+{% endmacro %}
+
+{% macro field(id, name, label, type='text', ic='user', ac='off', attrs='') %}
+<div class="field">
+  <span class="lead">{{ icon(ic) }}</span>
+  <input id="{{ id }}" name="{{ name }}" type="{{ type }}" placeholder=" " autocomplete="{{ ac }}" spellcheck="false" autocapitalize="off" required {{ attrs|safe }}>
+  <label for="{{ id }}">{{ label }}</label>
+  {% if type == 'password' %}
+  <button type="button" class="pw" data-toggle-pw aria-label="Show password" aria-pressed="false">
+    <span class="pw-show">{{ icon('eye') }}</span><span class="pw-hide">{{ icon('eye-off') }}</span>
+  </button>
+  {% else %}
+  <span class="state" aria-hidden="true"><span class="s-spin"></span><span class="s-ok">{{ icon('check') }}</span><span class="s-bad">{{ icon('x') }}</span></span>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# 6-box code entry. Fills the hidden input name="totp_code" the backend expects. #}
+{% macro otp_form(action, csrf, error, button) %}
+<form method="post" action="{{ action }}" novalidate>
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <div class="stg2">
+    <div class="otp{% if error %} err{% endif %}" data-otp role="group" aria-label="6-digit code">
+      {% for i in range(6) %}<input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="{{ 'one-time-code' if loop.first else 'off' }}" aria-label="Digit {{ i + 1 }}">{% endfor %}
+    </div>
+    <input type="hidden" name="totp_code" value="">
+    <button type="submit" class="btn btn-primary btn-block">{{ icon('shield-check') }}<span>{{ button }}</span></button>
+  </div>
+</form>
+{% endmacro %}
