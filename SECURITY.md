@@ -1,76 +1,73 @@
 # Security Implementation
 
-## Overview
-This document outlines the security measures implemented in the application to ensure data protection, user privacy, and system integrity.
+This document describes what the application actually implements, and what it does not. It is a demo project; treat it as a learning reference, not an audited product.
 
-## Security Measures
+## Implemented
 
-### 1. Authentication & Authorization
-- Multi-factor authentication (TOTP and WebAuthn/Passkeys)
-- Row-Level Security (RLS) for database access control
-- Session management with secure cookies
-- Account lockout after multiple failed attempts
+### 1. Authentication
+- Password login with bcrypt hashing
+- TOTP two-factor authentication (pyotp)
+- Mandatory passkeys (WebAuthn) before dashboard access
+- Sessions: HttpOnly, Secure, SameSite=Lax cookies; 30-minute lifetime, refreshed on activity
+- `/emergency-logout` clears the session during the sign-in process
 
-### 2. Data Protection
-- TLS/SSL encryption for all data transmissions
-- Secure password hashing using bcrypt
-- Database encryption for sensitive data
-- Automatic RLS context management
+### 2. Request protection
+- CSRF token required on every POST (form field `csrf_token` or `X-CSRFToken` header)
+- Input validation: usernames must match `^[a-zA-Z0-9_]{3,20}$`, TOTP codes `^\d{6}$`
+- Parameterized SQL queries (psycopg2)
 
-### 3. Input Validation & Sanitization
-- Comprehensive input validation for all user inputs
-- HTML sanitization to prevent XSS attacks
-- Parameterized queries to prevent SQL injection
-- Content validation for uploaded files
+### 3. Rate limiting and lockout (Flask-Limiter)
+- Default: 200 requests/day and 50/hour per IP
+- Login: 5/minute and 20/hour
+- Registration: 5/minute
+- TOTP setup: 5/minute
+- IP lockout: 5 failed logins → blocked for 15 minutes
+- Exceeding a limit shows the 429 error page
 
-### 4. Security Headers
-- Content Security Policy (CSP)
-- HTTP Strict Transport Security (HSTS)
-- X-Content-Type-Options
-- X-Frame-Options
-- Referrer-Policy
-- Permissions-Policy
+### 4. Security headers
+- Content-Security-Policy with a fresh nonce per request for scripts
+- Strict-Transport-Security
+- X-Frame-Options: DENY
+- X-Content-Type-Options: nosniff
+- Referrer-Policy: strict-origin-when-cross-origin
+- Permissions-Policy (camera, microphone, geolocation disabled)
+- Cache-Control: no-store (responses aren't cached)
 
-### 5. Rate Limiting & Brute Force Protection
-- IP-based rate limiting for all endpoints
-- Stricter limits for authentication endpoints
-- Account lockout after multiple failed attempts
-- Automatic blocking of suspicious activity
+The CSP allows only same-origin resources plus `cdn.jsdelivr.net`, Google Fonts styles (`fonts.googleapis.com`) and font files (`fonts.gstatic.com`). Inline `<style>` blocks and `style=""` attributes are blocked unless they carry the nonce, so keep styling in `static/style.css`.
 
-### 6. Logging & Monitoring
-- Comprehensive security event logging
-- Standardized log format for security events
-- Log rotation to prevent disk space issues
-- Suspicious activity monitoring
+### 5. Database
+- Row-Level Security policies in `supabase_rls_policies.sql`
+- RLS context set per connection (`db_middleware.py`)
 
-## Security Best Practices
+### 6. Error handling
+- One handler renders all HTTP errors with fixed, generic messages
+- Stack traces and exception text are never sent to the browser
+- Unhandled exceptions are logged server-side and shown as a 500 page
 
-### For Developers
-1. Always use parameterized queries for database operations
-2. Apply input validation and sanitization for all user inputs
-3. Use the security middleware for all new endpoints
-4. Log security events appropriately
-5. Follow the principle of least privilege
+### 7. Logging
+- Security events (login success/failure, registration, lockout) go through `security_logging.py`
 
-### For Administrators
-1. Regularly review security logs
-2. Keep all dependencies updated
-3. Perform regular security audits
-4. Maintain proper backup procedures
-5. Monitor for suspicious activity
+## Known limitations
 
-## Security Testing
-- Regular vulnerability scanning
-- Penetration testing before major releases
-- Code security reviews
-- Dependency vulnerability checks
+- Rate-limit counters and IP lockouts live in memory: they reset on restart and are not shared across workers. Use a shared store (for example Redis) for multi-worker deployments.
+- IP-based lockout can affect users behind a shared IP (school, office, mobile carrier NAT).
+- The strict CSP is intentionally relaxed for `cdn.jsdelivr.net` and Google Fonts; remove those allowances if you self-host the assets.
+- No automated security testing or third-party audit has been done.
 
-## Incident Response
-In case of a security incident:
-1. Isolate affected systems
-2. Assess the scope and impact
-3. Contain the breach
-4. Eradicate the vulnerability
-5. Recover systems
-6. Document the incident and response
-7. Implement preventive measures
+## Guidance
+
+### For developers
+1. Use parameterized queries for all database access
+2. Validate input on every new endpoint
+3. Keep new CSS in `static/style.css` and new scripts nonce-tagged (`<script nonce="{{ csp_nonce }}">`)
+4. Log security-relevant events with `log_security_event`
+
+### For administrators
+1. Use a long random `FLASK_PASS` and rotate it if exposed
+2. Serve only over HTTPS and set `RP_ID` / `ORIGIN` correctly
+3. Apply the RLS policy file to your database
+4. Review logs and keep dependencies updated
+
+## Reporting a vulnerability
+
+Please open a private security advisory on the GitHub repository, or contact the maintainer directly, rather than filing a public issue.

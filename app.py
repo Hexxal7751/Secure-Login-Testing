@@ -6,6 +6,7 @@ import bcrypt
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from flask import Flask, request, render_template, redirect, url_for, session, send_file, flash, make_response, jsonify, g, has_request_context
+from werkzeug.exceptions import HTTPException
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
@@ -146,7 +147,7 @@ def add_security_headers(response):
     # Content Security Policy
     csp = (
         "default-src 'self'; "
-        f"script-src 'self' 'nonce-{g.csp_nonce}'; "
+        f"script-src 'self' 'nonce-{getattr(g, 'csp_nonce', '')}'; "
         "style-src 'self'; "
         "img-src 'self' data:; "
         "font-src 'self'; "
@@ -216,10 +217,7 @@ def validate_csrf_token():
 USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_]{3,20}$")
 TOTP_REGEX = re.compile(r"^\d{6}$")
 
-# Handle 429 Too Many Requests
-@app.errorhandler(429)
-def ratelimit_error(e):
-    return make_response("Too many requests! Slow down.", 429)
+# Error handling (404, 429, 500, ...) lives at the bottom of this file.
 
 def login_required(f):
     @wraps(f)
@@ -1023,13 +1021,63 @@ def emergency_logout():
 
 
 
-@app.errorhandler(404)
-def page_not_found(e):
-    return render_template('404.html'), 404
+# ---------------------------------------------------------------------------
+# Error pages
+# One handler renders every HTTP error (400, 403, 404, 405, 429, 500, ...)
+# with templates/error.html. Fetch/JSON callers get JSON instead of HTML.
+# Messages are fixed strings so internal details never leak to the browser.
+# ---------------------------------------------------------------------------
+ERROR_PAGES = {
+    400: ("Bad request", "That request didn't look right. Go back and try again.", "alert", "warn"),
+    401: ("Sign in required", "Please sign in to continue.", "lock", "warn"),
+    403: ("Access denied", "You don't have permission to view this page.", "lock", "warn"),
+    404: ("Page not found", "The page you're looking for doesn't exist or has moved.", "compass", "info"),
+    405: ("Action not allowed", "That action isn't supported on this page.", "alert", "warn"),
+    408: ("Request timed out", "The request took too long. Please try again.", "clock", "warn"),
+    413: ("Request too large", "What you sent was too large to process.", "alert", "warn"),
+    429: ("Slow down a little", "Too many requests. Wait a minute, then try again.", "clock", "warn"),
+    500: ("Server error", "Something went wrong on our end. Please try again shortly.", "server", "danger"),
+    502: ("Bad gateway", "The server is waking up or unreachable. Try again in a moment.", "server", "danger"),
+    503: ("Service unavailable", "We're temporarily unavailable. Please try again shortly.", "server", "danger"),
+    504: ("Gateway timeout", "The server took too long to respond. Try again in a moment.", "server", "danger"),
+}
 
-@app.errorhandler(500)
-def server_error(e):
-    return render_template('500.html'), 500
+def _wants_json():
+    return (
+        request.is_json
+        or request.path.startswith("/passkey/")
+        or request.path.startswith("/check-username")
+    )
+
+def render_error(code, extra_headers=None):
+    title, message, icon, tone = ERROR_PAGES.get(
+        code,
+        ("Something went wrong", "An unexpected error occurred. Please try again.", "alert",
+         "danger" if code >= 500 else "warn"),
+    )
+    try:
+        if _wants_json():
+            response = make_response(jsonify({"error": message}), code)
+        else:
+            response = make_response(
+                render_template("error.html", code=code, title=title,
+                                message=message, icon=icon, tone=tone),
+                code,
+            )
+    except Exception:
+        # Never let the error page itself raise (that would loop)
+        app.logger.exception("Failed to render error page")
+        response = make_response(message, code)
+        response.headers["Content-Type"] = "text/plain; charset=utf-8"
+    for key, value in (extra_headers or []):
+        if key.lower() not in ("content-type", "content-length"):
+            response.headers[key] = value
+    return response
+
+@app.errorhandler(HTTPException)
+def handle_http_exception(e):
+    # Covers 404/405/429 (rate limiter) and unhandled exceptions (wrapped as 500)
+    return render_error(e.code or 500, e.get_headers())
 
 if __name__ == "__main__":
     create_users_table()
