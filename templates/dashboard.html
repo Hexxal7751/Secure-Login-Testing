@@ -1,90 +1,16 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, stepper %}
-{% block title %}Dashboard - Secure Login Testing{% endblock %}
-{% block page %}dash{% endblock %}
-
-{% block header_actions %}
-<a class="btn btn-ghost btn-sm" href="/logout">{{ icon('logout') }}<span>Sign out</span></a>
-{% endblock %}
-
+{% block title %}Dashboard{% endblock %}
 {% block content %}
-<div class="wrap">
-  {{ stepper(4) }}
-
-  <section class="card hero" data-tilt="2">
-    <div class="card-in stg">
-      <span class="badge"><i class="dot-live"></i>All 3 security layers verified</span>
-      <h1 data-split>Welcome back, {{ session.get('username', '') }}</h1>
-      <p class="sub">You’re signed in with your password, an authenticator code and a passkey.</p>
-      <div class="meta">
-        {% if last_login %}
-        <span class="meta-i">{{ icon('clock') }}Last sign-in {{ last_login.strftime('%b %d, %Y at %H:%M') }}</span>
-        {% endif %}
-      </div>
-      <div class="actions">
-        <button type="button" class="btn btn-primary btn-sm" data-extend>{{ icon('clock') }}<span>Extend session</span></button>
-        <a class="btn btn-ghost btn-sm" href="/logout">{{ icon('logout') }}<span>Sign out</span></a>
-      </div>
-    </div>
-  </section>
-
-  <section class="grid3">
-    <article class="tile reveal" data-tilt="7">
-      <h3>{{ icon('shield-check') }}Security layers</h3>
-      <div class="big"><span data-count="3">0</span><small> / 3</small></div>
-      <p class="sm">Password, authenticator and passkey</p>
-      <div class="bar"><i></i></div>
-    </article>
-
-    <article class="tile reveal" data-tilt="7">
-      <h3>{{ icon('clock') }}Session timeout</h3>
-      <div class="tile-sess">
-        <div class="ring ring-lg" data-session="1800" data-ping="{{ url_for('passkey_status') }}">
-          <svg viewBox="0 0 40 40" aria-hidden="true"><circle class="bgc" cx="20" cy="20" r="18"/><circle class="fg" cx="20" cy="20" r="18"/></svg>
-          <span class="num">30:00</span>
-        </div>
-        <p class="sm">You’re signed out after 30 minutes without activity.</p>
-      </div>
-    </article>
-
-    <article class="tile reveal" data-tilt="7">
-      <h3>{{ icon('key') }}Sign-in methods</h3>
-      <p class="sm">Every step is required each time you sign in.</p>
-      <div class="methods">
-        <span>{{ icon('check') }}Password</span>
-        <span>{{ icon('check') }}Authenticator</span>
-        <span>{{ icon('check') }}Passkey</span>
-      </div>
-    </article>
-  </section>
-
-  <h2 class="sec-h reveal">What’s protecting this account</h2>
-  <section class="grid-feat">
-    <article class="tile reveal" data-tilt="7"><div class="feat"><span class="fi">{{ icon('lock') }}</span><div><h3>Hashed passwords</h3><p>Passwords are stored with bcrypt, never in plain text.</p></div></div></article>
-    <article class="tile reveal" data-tilt="7"><div class="feat"><span class="fi">{{ icon('shield') }}</span><div><h3>CSRF tokens</h3><p>Every form and passkey request carries a one-time session token.</p></div></div></article>
-    <article class="tile reveal" data-tilt="7"><div class="feat"><span class="fi">{{ icon('code') }}</span><div><h3>Strict content policy</h3><p>Scripts run only if they carry this page’s nonce.</p></div></div></article>
-    <article class="tile reveal" data-tilt="7"><div class="feat"><span class="fi">{{ icon('ban') }}</span><div><h3>Lockout &amp; rate limits</h3><p>Five failed sign-ins lock the account for 15 minutes.</p></div></div></article>
-    <article class="tile reveal" data-tilt="7"><div class="feat"><span class="fi">{{ icon('database') }}</span><div><h3>Row-level security</h3><p>The database only returns rows that belong to you.</p></div></div></article>
-    <article class="tile reveal" data-tilt="7"><div class="feat"><span class="fi">{{ icon('activity') }}</span><div><h3>Hardened cookies</h3><p>HttpOnly, Secure and SameSite=Lax session cookies.</p></div></div></article>
-  </section>
-
-  <section class="term reveal" aria-label="Sign-in summary">
-    <div class="term-h"><i></i><i></i><i></i><span>session summary</span></div>
-    <span class="ln"><b>✓</b> password verified <em>(bcrypt)</em></span>
-    <span class="ln"><b>✓</b> authenticator code accepted <em>(TOTP)</em></span>
-    <span class="ln"><b>✓</b> passkey assertion verified <em>(WebAuthn)</em></span>
-    <span class="ln"><b>✓</b> session cookie issued <em>(HttpOnly · Secure)</em></span>
-    <span class="ln">&gt; ready<i class="cursor"></i></span>
-  </section>
-</div>
-{% endblock %}
-
-{% block modals %}
-<div class="modal" id="expired" role="dialog" aria-modal="true" aria-labelledby="exp-title" aria-hidden="true">
-  <div class="sheet">
-    <h2 id="exp-title">{{ icon('clock') }} Session expired</h2>
-    <p>You’ve been inactive for 30 minutes, so for your safety you need to sign in again.</p>
-    <div class="actions"><a class="btn btn-primary btn-sm" href="{{ url_for('dashboard') }}">Sign in again</a></div>
-  </div>
-</div>
+<h2>Welcome, {{ username }}</h2>
+<p class="muted">You're signed in with every security layer.</p>
+<dl class="facts">
+  <dt>Sign-in method</dt><dd>{{ 'Google' if provider == 'google' else 'Username and password' }}</dd>
+  {% if masked_email %}<dt>Email</dt><dd>{{ masked_email }}</dd>{% endif %}
+  {% if last_login %}<dt>Last login</dt><dd>{{ last_login.strftime('%Y-%m-%d %H:%M') }}</dd>{% endif %}
+</dl>
+<form method="post" action="{{ url_for('logout') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button class="btn" type="submit">Log out</button>
+</form>
+<a class="btn btn-secondary" href="{{ url_for('delete_account') }}">Delete my account</a>
 {% endblock %}

@@ -1,49 +1,16 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, stepper, otp_form %}
-{% block title %}Set up 2FA - Secure Login Testing{% endblock %}
+{% block title %}Set up authenticator{% endblock %}
 {% block content %}
-<div class="auth wide">
-  {{ stepper(2) }}
-  <section class="card" data-tilt="2">
-    <div class="card-in">
-      <div class="split">
-        <div class="stg">
-          <div class="qr">
-            <i></i><i></i><i></i><i></i>
-            {% if qr_code %}<img src="{{ qr_code }}" alt="QR code for your authenticator app" width="204" height="204">{% endif %}
-          </div>
-        </div>
-        <div class="stg">
-          <h1 data-split>Set up two-factor</h1>
-          <ol class="steps-l">
-            <li><b>1</b><span>Open an authenticator app (Google Authenticator, Authy, 1Password…) and scan the QR code.</span></li>
-            <li><b>2</b><span>Enter the 6-digit code the app shows to confirm.</span></li>
-          </ol>
-          {% if secret_key %}
-          <div class="secret" title="Can’t scan? Use this key instead.">
-            <div><div class="lbl">Can’t scan? Click to reveal the key</div><code id="secret-key">{{ secret_key }}</code></div>
-            <button type="button" class="copy" data-copy="#secret-key">{{ icon('copy') }}<span>Copy</span></button>
-          </div>
-          {% endif %}
-          {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
-          {{ otp_form(url_for('setup_totp'), csrf_token, error, 'Verify and continue') }}
-          <div class="divider"><button type="button" class="linkbtn" data-open="confirm-cancel">Cancel setup</button></div>
-        </div>
-      </div>
-    </div>
-  </section>
-</div>
-{% endblock %}
-{% block modals %}
-<div class="modal" id="confirm-cancel" role="dialog" aria-modal="true" aria-labelledby="cancel-title" aria-hidden="true">
-  <div class="sheet">
-    <button type="button" class="sheet-x" data-close aria-label="Close">{{ icon('x') }}</button>
-    <h2 id="cancel-title">{{ icon('alert') }} Cancel setup?</h2>
-    <p>Cancelling removes the account you just created and signs you out. You can register again at any time.</p>
-    <div class="actions">
-      <button type="button" class="btn btn-ghost btn-sm" data-close>Keep going</button>
-      <a class="btn btn-danger btn-sm" href="{{ url_for('cancel_setup') }}">Cancel and delete</a>
-    </div>
-  </div>
-</div>
+<h2>Set up your authenticator app</h2>
+<p class="muted">Scan the QR code with Google Authenticator, Authy, 1Password or similar, then enter the 6-digit code it shows.</p>
+{% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+<img class="qr" src="{{ url_for('totp_qr') }}" alt="QR code for your authenticator app" width="200" height="200">
+<p class="muted center">Can't scan? Enter this key manually:</p>
+<code class="secret">{{ secret_key }}</code>
+<form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label for="totp_code">6-digit code</label>
+  <input id="totp_code" name="totp_code" class="code-input" type="text" inputmode="numeric" pattern="\d{6}" maxlength="6" autocomplete="one-time-code" required>
+  <button class="btn" type="submit">Confirm authenticator</button>
+</form>
 {% endblock %}

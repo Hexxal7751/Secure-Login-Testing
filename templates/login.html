@@ -1,32 +1,20 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, stepper, field %}
-{% block title %}Login - Secure Login Testing{% endblock %}
+{% block title %}Log in{% endblock %}
 {% block content %}
-<div class="auth">
-  {{ stepper(1) }}
-  <section class="card" data-tilt="4">
-    <div class="card-in stg">
-      <div class="hero-ic">{{ icon('shield-check') }}</div>
-      <h1 data-split>Security Portal</h1>
-      <p class="sub">Welcome back! Sign in to your secure account.</p>
-
-      {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
-
-      <form method="post" action="{{ url_for('login') }}" class="stg2" novalidate>
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        {{ field('username', 'username', 'Username', 'text', 'user', 'username', 'autofocus') }}
-        {{ field('password', 'password', 'Password', 'password', 'lock', 'current-password') }}
-        <p class="caps" data-caps>{{ icon('alert') }} Caps Lock is on</p>
-        <button type="submit" class="btn btn-primary btn-block">{{ icon('bolt') }}<span>Sign in</span>{{ icon('arrow', 'ic-go') }}</button>
-      </form>
-
-      <p class="alt">Don’t have an account? <a href="{{ url_for('register') }}">Create one</a></p>
-    </div>
-  </section>
-  <div class="chips" aria-hidden="true">
-    <span class="chip">{{ icon('lock') }}bcrypt hashing</span>
-    <span class="chip">{{ icon('shield') }}CSRF protected</span>
-    <span class="chip">{{ icon('fingerprint') }}Passkeys</span>
-  </div>
-</div>
+<h2>Log in</h2>
+<p class="muted">After signing in you'll confirm with your authenticator code and passkey.</p>
+{% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
+<form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label for="username">Username</label>
+  <input id="username" name="username" type="text" maxlength="20" autocomplete="username" required>
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required>
+  <button class="btn" type="submit">Log in</button>
+</form>
+{% if google_enabled %}
+  <div class="divider">or</div>
+  <a class="btn btn-secondary" href="{{ url_for('google_auth') }}">Continue with Google</a>
+{% endif %}
+<p class="muted center">No account yet? <a href="{{ url_for('register') }}">Create one</a></p>
 {% endblock %}

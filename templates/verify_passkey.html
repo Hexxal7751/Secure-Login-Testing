@@ -1,23 +1,15 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, stepper %}
-{% block title %}Verify Passkey - Secure Login Testing{% endblock %}
+{% block title %}Verify with passkey{% endblock %}
 {% block content %}
-<div class="auth">
-  {{ stepper(3) }}
-  <section class="card" data-tilt="4">
-    <div class="card-in" data-passkey data-mode="auth"
-         data-begin="{{ url_for('passkey_authenticate_begin') }}"
-         data-complete="{{ url_for('passkey_authenticate_complete') }}">
-      <div class="stg">
-        <h1 data-split>Verify your passkey</h1>
-        <p class="sub">One last step. Confirm it’s you with your device.</p>
-        <div class="orbwrap">
-          <div class="orb" data-state="idle">{{ icon('fingerprint', 'o-fp') }}{{ icon('check', 'o-ok') }}{{ icon('x', 'o-err') }}</div>
-          <p class="status" aria-live="polite">Ready when you are.</p>
-        </div>
-        <button type="button" class="btn btn-primary btn-block" data-pk-go>{{ icon('fingerprint') }}<span>Verify with passkey</span></button>
-      </div>
-    </div>
-  </section>
+<h2>Verify with your passkey</h2>
+<p class="muted">Confirm it's you with your fingerprint, face, or screen lock.</p>
+<div id="passkey-root" data-mode="authenticate"
+     data-begin="{{ url_for('passkey_authenticate_begin') }}"
+     data-complete="{{ url_for('passkey_authenticate_complete') }}"
+     data-next="{{ url_for('dashboard') }}">
+  <button class="btn" type="button">Use passkey</button>
+  <p class="status" role="status"></p>
 </div>
+<p class="muted center"><a href="{{ url_for('logout') }}">Cancel and log out</a></p>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/passkey.js') }}" nonce="{{ csp_nonce }}"></script>{% endblock %}
