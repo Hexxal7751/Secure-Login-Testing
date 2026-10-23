@@ -1,14 +1,22 @@
 {% extends "base.html" %}
-{% block title %}Enter authenticator code{% endblock %}
+{% from "_macros.html" import icon, stepper, otp_form %}
+{% block title %}Verify 2FA - Secure Login Testing{% endblock %}
 {% block content %}
-<h2>Enter your authenticator code</h2>
-<p class="muted">Open your authenticator app and enter the current 6-digit code.</p>
-{% if error %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endif %}
-<form method="post">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <label for="totp_code">6-digit code</label>
-  <input id="totp_code" name="totp_code" class="code-input" type="text" inputmode="numeric" pattern="\d{6}" maxlength="6" autocomplete="one-time-code" required>
-  <button class="btn" type="submit">Verify</button>
-</form>
-<p class="muted center"><a href="{{ url_for('logout') }}">Cancel and log out</a></p>
+<div class="auth">
+  {{ stepper(2) }}
+  <section class="card" data-tilt="4">
+    <div class="card-in stg">
+      <div class="hero-ic">{{ icon('phone') }}</div>
+      <h1 data-split>Two-factor check</h1>
+      <p class="sub">Enter the 6-digit code from your authenticator app.</p>
+      <div class="ring" data-ring title="Codes refresh every 30 seconds">
+        <svg viewBox="0 0 40 40" aria-hidden="true"><circle class="bgc" cx="20" cy="20" r="18"/><circle class="fg" cx="20" cy="20" r="18"/></svg>
+        <span class="num">30</span>
+      </div>
+      {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
+      {{ otp_form(url_for('verify_totp_page'), csrf_token, error, 'Verify code') }}
+      <p class="alt">Codes refresh every 30 seconds.</p>
+    </div>
+  </section>
+</div>
 {% endblock %}

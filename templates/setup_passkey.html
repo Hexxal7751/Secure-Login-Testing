@@ -1,14 +1,28 @@
 {% extends "base.html" %}
-{% block title %}Create a passkey{% endblock %}
+{% from "_macros.html" import icon, stepper %}
+{% block title %}Set up Passkey - Secure Login Testing{% endblock %}
 {% block content %}
-<h2>Create your passkey</h2>
-<p class="muted">The last step. Your device will ask for your fingerprint, face, or screen lock. The passkey stays on your device and only works on this site.</p>
-<div id="passkey-root" data-mode="register"
-     data-begin="{{ url_for('passkey_register_begin') }}"
-     data-complete="{{ url_for('passkey_register_complete') }}"
-     data-next="{{ url_for('dashboard') }}">
-  <button class="btn" type="button">Create passkey</button>
-  <p class="status" role="status"></p>
+<div class="auth">
+  {{ stepper(3) }}
+  <section class="card" data-tilt="4">
+    <div class="card-in" data-passkey data-mode="register"
+         data-begin="{{ url_for('passkey_register_begin') }}"
+         data-complete="{{ url_for('passkey_register_complete') }}"
+         data-next="{{ url_for('verify_passkey_page') }}">
+      <div class="stg">
+        <h1 data-split>Create your passkey</h1>
+        <p class="sub">Use your fingerprint, face or device PIN instead of typing a code.</p>
+        <div class="orbwrap">
+          <div class="orb" data-state="idle">{{ icon('fingerprint', 'o-fp') }}{{ icon('check', 'o-ok') }}{{ icon('x', 'o-err') }}</div>
+          <p class="status" aria-live="polite">Ready when you are.</p>
+        </div>
+        <button type="button" class="btn btn-primary btn-block" data-pk-go>{{ icon('key') }}<span>Create passkey</span></button>
+        <ul class="facts">
+          <li>{{ icon('lock') }}<span>Your private key stays on your device and is never sent to the server.</span></li>
+          <li>{{ icon('shield-check') }}<span>Passkeys are tied to this site, so they can’t be phished.</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='js/passkey.js') }}" nonce="{{ csp_nonce }}"></script>{% endblock %}
