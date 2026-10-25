@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, stepper, field %}
+{% block title %}Choose a username - Secure Login Testing{% endblock %}
+{% block content %}
+<div class="auth">
+  {{ stepper(1) }}
+  <section class="card" data-tilt="4">
+    <div class="card-in stg">
+      <div class="hero-ic">{{ icon('user-plus') }}</div>
+      <h1 data-split>Choose a username</h1>
+      <p class="sub">Google confirmed <strong>{{ masked_email }}</strong>. Pick a username to finish creating your account.</p>
+
+      {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
+
+      <form method="post" action="{{ url_for('register_google') }}" class="stg2" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {{ field('username', 'username', 'Username', 'text', 'user', 'username', 'autofocus minlength="3" maxlength="20" pattern="[a-zA-Z0-9_]{3,20}" data-check="' ~ url_for('check_username', username='USERNAME') ~ '"') }}
+        <p class="hint" data-user-hint>3–20 characters: letters, numbers and underscores.</p>
+        <button type="submit" class="btn btn-primary btn-block">{{ icon('user-plus') }}<span>Continue</span>{{ icon('arrow', 'ic-go') }}</button>
+      </form>
+
+      <p class="alt">Next: authenticator app, then a passkey. <a href="{{ url_for('emergency_logout') }}">Start over</a></p>
+    </div>
+  </section>
+</div>
+{% endblock %}

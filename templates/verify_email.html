@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, stepper, otp_form %}
+{% block title %}Verify email - Secure Login Testing{% endblock %}
+{% block content %}
+<div class="auth">
+  {{ stepper(1) }}
+  <section class="card" data-tilt="4">
+    <div class="card-in stg">
+      <div class="hero-ic">{{ icon('mail') }}</div>
+      <h1 data-split>Check your email</h1>
+      <p class="sub">We sent a 6-digit code to <strong>{{ masked_email }}</strong>. It expires in 10 minutes.</p>
+      {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
+      {{ otp_form(url_for('verify_email_page'), csrf_token, error, 'Verify email', do='verify') }}
+      <div class="divider">
+        <form method="post" action="{{ url_for('verify_email_page') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="do" value="resend">
+          <button type="submit" class="linkbtn">Resend code</button>
+        </form>
+        <button type="button" class="linkbtn" data-open="confirm-cancel">Cancel setup</button>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+{% block modals %}
+<div class="modal" id="confirm-cancel" role="dialog" aria-modal="true" aria-labelledby="cancel-title" aria-hidden="true">
+  <div class="sheet">
+    <button type="button" class="sheet-x" data-close aria-label="Close">{{ icon('x') }}</button>
+    <h2 id="cancel-title">{{ icon('alert') }} Cancel setup?</h2>
+    <p>Cancelling removes the account you just created and signs you out. You can register again at any time.</p>
+    <div class="actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-close>Keep going</button>
+      <form method="post" action="{{ url_for('cancel_setup') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-danger btn-sm">Cancel and delete</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

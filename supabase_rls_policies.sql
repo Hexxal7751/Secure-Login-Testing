@@ -119,3 +119,11 @@ To use these RLS policies in your Flask application:
 -- Step 6: Add instructions for setting the user ID in your application
 COMMENT ON FUNCTION get_session_user_id() IS 'Set the user ID with: SET app.current_user_id = <user_id>';
 COMMENT ON FUNCTION is_admin() IS 'Set admin mode with: SET app.is_admin = true';
+
+-- Appended to supabase_rls_policies.sql (or run once in the Supabase SQL editor).
+-- The app creates the email_codes table itself on startup; this only locks it down.
+ALTER TABLE IF EXISTS email_codes ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_codes_admin_policy ON email_codes;
+CREATE POLICY email_codes_admin_policy ON email_codes
+    FOR ALL
+    USING (current_setting('app.is_admin', TRUE)::BOOLEAN = TRUE);

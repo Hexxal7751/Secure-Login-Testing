@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, stepper, field %}
+{% from "_macros.html" import icon, stepper, field, google_logo %}
 {% block title %}Register - Secure Login Testing{% endblock %}
 {% block content %}
 <div class="auth">
@@ -8,14 +8,20 @@
     <div class="card-in stg">
       <div class="hero-ic">{{ icon('user-plus') }}</div>
       <h1 data-split>Create account</h1>
-      <p class="sub">Next, you’ll add an authenticator app and a passkey.</p>
+      <p class="sub">Next, you’ll verify your email, then add an authenticator app and a passkey.</p>
 
       {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
+
+      {% if google_enabled %}
+      <a class="btn btn-google btn-block" href="{{ url_for('google_start') }}">{{ google_logo() }}<span>Sign up with Google</span></a>
+      <div class="or" aria-hidden="true"><span>or use a password</span></div>
+      {% endif %}
 
       <form method="post" action="{{ url_for('register') }}" class="stg2" novalidate>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         {{ field('username', 'username', 'Username', 'text', 'user', 'username', 'autofocus minlength="3" maxlength="20" pattern="[a-zA-Z0-9_]{3,20}" data-check="' ~ url_for('check_username', username='USERNAME') ~ '"') }}
         <p class="hint" data-user-hint>3–20 characters: letters, numbers and underscores.</p>
+        {{ field('email', 'email', 'Email', 'email', 'mail', 'email', 'maxlength="254"') }}
         {{ field('password', 'password', 'Password', 'password', 'lock', 'new-password', 'minlength="8" data-strength') }}
         <div class="meter" data-meter data-s="0" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
         <p class="hint" data-meter-label>Use at least 8 characters</p>

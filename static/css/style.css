@@ -476,3 +476,30 @@ button,.btn,.pw,.copy,.linkbtn,.fab,.sheet-x,input{touch-action:manipulation;-we
 @keyframes vtout-lite{to{opacity:0}}
 @keyframes vtin-lite{from{opacity:0}}
 @keyframes leave-lite{to{opacity:0}}
+
+
+/* ============================================================
+   Google sign-in, "or" divider, account deletion
+   (paste at the very END of static/css/style.css)
+   ============================================================ */
+.btn-google{background:#fff;color:#1f1f1f;border:1px solid rgba(255,255,255,.85);box-shadow:0 0 22px rgba(56,189,248,.25)}
+.btn-google:hover{color:#111;filter:brightness(.96);box-shadow:0 0 34px rgba(56,189,248,.4)}
+.btn-google::before{display:none}
+.g-logo{width:20px;height:20px;flex:none}
+.or{display:flex;align-items:center;gap:.8rem;margin:1.1rem 0;color:var(--dim);font:600 .72rem var(--mono);text-transform:uppercase;letter-spacing:.1em}
+.or::before,.or::after{content:'';flex:1;height:1px;background:rgba(168,85,247,.28)}
+.hero-ic.danger{background:linear-gradient(135deg,rgba(225,29,72,.55),rgba(147,51,234,.35));border-color:rgba(244,63,94,.6);box-shadow:0 0 40px rgba(244,63,94,.45)}
+.divider{flex-wrap:wrap;align-items:center;gap:.4rem}
+.divider form{display:inline-block;margin:0}
+.note{margin:0 0 1rem;font-size:.9rem;color:var(--mut)}
+.note strong{color:#fff}
+.note code{padding:.15rem .5rem;border-radius:8px;background:rgba(7,5,15,.7);border:1px dashed rgba(244,63,94,.5);color:#fda4af;font:600 .85rem var(--mono);word-break:break-all}
+.del-steps{list-style:none;margin:0 0 1.3rem;padding:0;display:grid;gap:.5rem;text-align:left}
+.del-steps li{display:flex;align-items:center;gap:.7rem;padding:.5rem .8rem;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);font-size:.88rem;color:var(--dim)}
+.del-steps .dot{width:26px;height:26px;font-size:.72rem;flex:none}
+.del-steps .dot .ic{width:13px;height:13px;stroke-width:3}
+.del-steps li.now{color:#fff;border-color:rgba(217,70,239,.55);background:rgba(147,51,234,.14)}
+.del-steps li.now .dot{border-color:var(--f);color:#fff}
+.del-steps li.done{color:var(--mut)}
+.del-steps li.done .dot{background:var(--grad);border-color:transparent;color:#fff}
+.sheet .actions form{margin:0}

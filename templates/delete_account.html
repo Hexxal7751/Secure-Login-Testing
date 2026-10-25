@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, field, otp_form, google_logo %}
+{% block title %}Delete account - Secure Login Testing{% endblock %}
+{% block page %}delete{% endblock %}
+
+{% block header_actions %}
+<a class="btn btn-ghost btn-sm" href="{{ url_for('delete_cancel') }}">{{ icon('back') }}<span>Cancel</span></a>
+{% endblock %}
+
+{% block content %}
+<div class="auth">
+  <section class="card" data-tilt="4">
+    <div class="card-in stg">
+      <div class="hero-ic danger">{{ icon('ban') }}</div>
+      <h1 data-split>Delete account</h1>
+      <p class="sub">This permanently removes your account, passkeys and data. Confirm it’s you at every step.</p>
+
+      <ol class="del-steps" aria-label="Deletion steps">
+        {% for s in steps %}
+        <li class="{{ s.state }}"{% if s.state == 'now' %} aria-current="step"{% endif %}>
+          <span class="dot">{% if s.state == 'done' %}{{ icon('check') }}{% else %}{{ loop.index }}{% endif %}</span>
+          <span>{{ s.label }}</span>
+        </li>
+        {% endfor %}
+      </ol>
+
+      {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
+
+      {% if current == 'password' %}
+      <form method="post" action="{{ url_for('delete_account') }}" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="step" value="password">
+        <div class="stg2">
+          {{ field('password', 'password', 'Your password', 'password', 'lock', 'current-password', 'autofocus') }}
+          <button type="submit" class="btn btn-primary btn-block">{{ icon('lock') }}<span>Confirm password</span></button>
+        </div>
+      </form>
+
+      {% elif current == 'google' %}
+      <p class="note">Sign in with the Google account linked to this profile to continue.</p>
+      <a class="btn btn-google btn-block" href="{{ url_for('google_start', intent='delete') }}">{{ google_logo() }}<span>Confirm with Google</span></a>
+
+      {% elif current == 'email' %}
+      {% if code_sent %}
+      <p class="note">Enter the 6-digit code we emailed to <strong>{{ masked_email }}</strong>.</p>
+      {{ otp_form(url_for('delete_account'), csrf_token, error, 'Verify email code', step='email', do='verify') }}
+      <div class="divider">
+        <form method="post" action="{{ url_for('delete_account') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="step" value="email">
+          <input type="hidden" name="do" value="send">
+          {% if needs_email %}<input type="hidden" name="email" value="">{% endif %}
+          <button type="submit" class="linkbtn">Resend code</button>
+        </form>
+      </div>
+      {% else %}
+      <form method="post" action="{{ url_for('delete_account') }}" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="step" value="email">
+        <input type="hidden" name="do" value="send">
+        <div class="stg2">
+          {% if needs_email %}
+          <p class="note">Your account has no email yet. Add one and we’ll send a code to it.</p>
+          {{ field('email', 'email', 'Email', 'email', 'mail', 'email', 'autofocus maxlength="254"') }}
+          {% else %}
+          <p class="note">We’ll email a 6-digit code to <strong>{{ masked_email }}</strong>.</p>
+          {% endif %}
+          <button type="submit" class="btn btn-primary btn-block">{{ icon('mail') }}<span>Send code</span></button>
+        </div>
+      </form>
+      {% endif %}
+
+      {% elif current == 'totp' %}
+      <p class="note">Enter the 6-digit code from your authenticator app.</p>
+      {{ otp_form(url_for('delete_account'), csrf_token, error, 'Verify code', step='totp') }}
+
+      {% elif current == 'passkey' %}
+      <div data-passkey data-mode="auth"
+           data-begin="{{ url_for('delete_passkey_begin') }}"
+           data-complete="{{ url_for('delete_passkey_complete') }}">
+        <div class="orbwrap">
+          <div class="orb" data-state="idle">{{ icon('fingerprint', 'o-fp') }}{{ icon('check', 'o-ok') }}{{ icon('x', 'o-err') }}</div>
+          <p class="status" aria-live="polite">Ready when you are.</p>
+        </div>
+        <button type="button" class="btn btn-primary btn-block" data-pk-go>{{ icon('fingerprint') }}<span>Verify with passkey</span></button>
+      </div>
+
+      {% elif current == 'confirm' %}
+      <form id="delete-form" method="post" action="{{ url_for('delete_account') }}" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="step" value="confirm">
+        <div class="stg2">
+          <p class="note">Last step. To confirm, type <code>DELETE {{ username }}</code> below.</p>
+          {{ field('confirm_text', 'confirm_text', 'Type the phrase above', 'text', 'ban', 'off', 'autofocus') }}
+          <button type="button" class="btn btn-danger btn-block" data-open="confirm-delete">{{ icon('ban') }}<span>Delete my account</span></button>
+        </div>
+      </form>
+      {% endif %}
+
+      <div class="divider"><a class="linkbtn" href="{{ url_for('delete_cancel') }}">Keep my account</a></div>
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block modals %}
+{% if current == 'confirm' %}
+<div class="modal" id="confirm-delete" role="dialog" aria-modal="true" aria-labelledby="del-title" aria-hidden="true">
+  <div class="sheet">
+    <button type="button" class="sheet-x" data-close aria-label="Close">{{ icon('x') }}</button>
+    <h2 id="del-title">{{ icon('alert') }} Delete forever?</h2>
+    <p>Your account, passkeys and email code history will be erased immediately. This can’t be undone.</p>
+    <div class="actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-close>Keep my account</button>
+      <button type="submit" form="delete-form" name="final" value="yes" class="btn btn-danger btn-sm">Yes, delete it</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

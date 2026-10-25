@@ -8,6 +8,7 @@
 {% endblock %}
 
 {% block content %}
+{% set first = 'Google account' if provider == 'google' else 'Password' %}
 <div class="wrap">
   {{ stepper(4) }}
 
@@ -15,15 +16,19 @@
     <div class="card-in stg">
       <span class="badge"><i class="dot-live"></i>All 3 security layers verified</span>
       <h1 data-split>Welcome back, {{ session.get('username', '') }}</h1>
-      <p class="sub">You’re signed in with your password, an authenticator code and a passkey.</p>
+      <p class="sub">You’re signed in with your {{ 'Google account' if provider == 'google' else 'password' }}, an authenticator code and a passkey.</p>
       <div class="meta">
         {% if last_login %}
         <span class="meta-i">{{ icon('clock') }}Last sign-in {{ last_login.strftime('%b %d, %Y at %H:%M') }}</span>
+        {% endif %}
+        {% if masked_email %}
+        <span class="meta-i">{{ icon('mail') }}{{ masked_email }}</span>
         {% endif %}
       </div>
       <div class="actions">
         <button type="button" class="btn btn-primary btn-sm" data-extend>{{ icon('clock') }}<span>Extend session</span></button>
         <a class="btn btn-ghost btn-sm" href="/logout">{{ icon('logout') }}<span>Sign out</span></a>
+        <a class="btn btn-ghost btn-sm" href="{{ url_for('delete_account') }}">{{ icon('ban') }}<span>Delete account</span></a>
       </div>
     </div>
   </section>
@@ -32,7 +37,7 @@
     <article class="tile reveal" data-tilt="7">
       <h3>{{ icon('shield-check') }}Security layers</h3>
       <div class="big"><span data-count="3">0</span><small> / 3</small></div>
-      <p class="sm">Password, authenticator and passkey</p>
+      <p class="sm">{{ first }}, authenticator and passkey</p>
       <div class="bar"><i></i></div>
     </article>
 
@@ -51,7 +56,7 @@
       <h3>{{ icon('key') }}Sign-in methods</h3>
       <p class="sm">Every step is required each time you sign in.</p>
       <div class="methods">
-        <span>{{ icon('check') }}Password</span>
+        <span>{{ icon('check') }}{{ first }}</span>
         <span>{{ icon('check') }}Authenticator</span>
         <span>{{ icon('check') }}Passkey</span>
       </div>
@@ -70,7 +75,11 @@
 
   <section class="term reveal" aria-label="Sign-in summary">
     <div class="term-h"><i></i><i></i><i></i><span>session summary</span></div>
+    {% if provider == 'google' %}
+    <span class="ln"><b>✓</b> google account verified <em>(OpenID Connect)</em></span>
+    {% else %}
     <span class="ln"><b>✓</b> password verified <em>(bcrypt)</em></span>
+    {% endif %}
     <span class="ln"><b>✓</b> authenticator code accepted <em>(TOTP)</em></span>
     <span class="ln"><b>✓</b> passkey assertion verified <em>(WebAuthn)</em></span>
     <span class="ln"><b>✓</b> session cookie issued <em>(HttpOnly · Secure)</em></span>

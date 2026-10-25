@@ -42,7 +42,10 @@
     <p>Cancelling removes the account you just created and signs you out. You can register again at any time.</p>
     <div class="actions">
       <button type="button" class="btn btn-ghost btn-sm" data-close>Keep going</button>
-      <a class="btn btn-danger btn-sm" href="{{ url_for('cancel_setup') }}">Cancel and delete</a>
+      <form method="post" action="{{ url_for('cancel_setup') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-danger btn-sm">Cancel and delete</button>
+      </form>
     </div>
   </div>
 </div>

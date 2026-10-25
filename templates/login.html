@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import icon, stepper, field %}
+{% from "_macros.html" import icon, stepper, field, google_logo %}
 {% block title %}Login - Secure Login Testing{% endblock %}
 {% block content %}
 <div class="auth">
@@ -11,6 +11,11 @@
       <p class="sub">Welcome back! Sign in to your secure account.</p>
 
       {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
+
+      {% if google_enabled %}
+      <a class="btn btn-google btn-block" href="{{ url_for('google_start') }}">{{ google_logo() }}<span>Continue with Google</span></a>
+      <div class="or" aria-hidden="true"><span>or</span></div>
+      {% endif %}
 
       <form method="post" action="{{ url_for('login') }}" class="stg2" novalidate>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
