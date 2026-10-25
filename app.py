@@ -79,9 +79,14 @@ RP_NAME = "Secure Login Testing"
 ORIGIN = os.getenv("ORIGIN", "http://localhost:10000").strip().rstrip("/")
 
 # Google sign-in (OpenID Connect)
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", f"{ORIGIN}/auth/google/callback").strip()
+def _clean_env(value):
+    """Trim spaces and quotes that often get pasted along with a value."""
+    return (value or "").strip().strip("\"'").strip()
+
+
+GOOGLE_CLIENT_ID = _clean_env(os.getenv("GOOGLE_CLIENT_ID"))
+GOOGLE_CLIENT_SECRET = _clean_env(os.getenv("GOOGLE_CLIENT_SECRET"))
+GOOGLE_REDIRECT_URI = _clean_env(os.getenv("GOOGLE_REDIRECT_URI")) or f"{ORIGIN}/auth/google/callback"
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
@@ -99,6 +104,7 @@ EMAIL_CODE_TTL = timedelta(minutes=10)
 EMAIL_CODE_MAX_ATTEMPTS = 5
 DEL_TTL = timedelta(minutes=10)
 PENDING_GOOGLE_TTL = timedelta(minutes=15)
+RESET_TTL = timedelta(minutes=15)
 
 # ---------------------------------------------------------------------------
 # Rate limiting
@@ -118,6 +124,9 @@ login_limit = "5 per minute; 20 per hour"
 # ---------------------------------------------------------------------------
 USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_]{3,20}$")
 TOTP_REGEX = re.compile(r"^\d{6}$")
+# Password-reset codes: 8 letters/digits, no look-alikes (no I, O, 0, 1)
+CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+RESET_CODE_REGEX = re.compile(r"^[A-HJ-NP-Z2-9]{8}$")
 
 # Used so unknown users / Google-only users cost the same time as a real check
 DUMMY_HASH = bcrypt.hashpw(b"not-a-real-password", bcrypt.gensalt()).decode("utf-8")
@@ -471,7 +480,7 @@ def has_active_code(user_id, purpose):
 
 
 def issue_email_code(user_id, purpose, email):
-    """Create a 6-digit code and email it. Returns (ok, error_message)."""
+    """Create a code (6 digits; 8 letters/digits for password reset) and email it. Returns (ok, error_message)."""
     now = utcnow()
     recent = db_run(
         """SELECT created_at FROM email_codes
@@ -484,7 +493,12 @@ def issue_email_code(user_id, purpose, email):
     if recent and (now - recent[0]["created_at"]).total_seconds() < 45:
         return False, "Please wait a moment before requesting another code."
 
-    code = f"{secrets.randbelow(1000000):06d}"
+    if purpose == "reset":
+        code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
+        shown = f"{code[:4]}-{code[4:]}"
+    else:
+        code = f"{secrets.randbelow(1000000):06d}"
+        shown = code
     conn = get_admin_connection()
     try:
         cur = conn.cursor()
@@ -504,11 +518,13 @@ def issue_email_code(user_id, purpose, email):
     finally:
         reset_connection_context(conn)
 
-    what = "finish creating your account" if purpose == "register" else "delete your account"
+    what = {"register": "finish creating your account",
+            "delete": "delete your account",
+            "reset": "reset your password"}.get(purpose, "continue")
     ok = send_email(
         email,
-        f"Your Secure Login Testing code: {code}",
-        f"Your verification code is {code}\n\n"
+        f"Your Secure Login Testing code: {shown}",
+        f"Your verification code is {shown}\n\n"
         f"Use it to {what}. It expires in 10 minutes.\n\n"
         "If you didn't ask for this, you can ignore this email.",
     )
@@ -884,6 +900,14 @@ def google_callback():
         # The token came straight from Google over HTTPS using our client secret,
         # so Google documents that its signature need not be re-checked here.
         claims = _decode_jwt_payload(tokens["id_token"])
+    except urllib.error.HTTPError as e:
+        # Google's reply says why (e.g. invalid_client = wrong GOOGLE_CLIENT_SECRET,
+        # invalid_grant = code already used, redirect_uri_mismatch = wrong redirect URI)
+        detail = e.read()[:300].decode("utf-8", "replace")
+        app.logger.error("Google token endpoint returned %s: %s | redirect_uri=%s client_id=%s...",
+                         e.code, detail, GOOGLE_REDIRECT_URI, GOOGLE_CLIENT_ID[:12])
+        flash("Google sign-in failed. Please try again.", "error")
+        return redirect(back)
     except Exception:
         app.logger.exception("Google token exchange failed")
         flash("Google sign-in failed. Please try again.", "error")
@@ -1554,6 +1578,107 @@ def delete_passkey_complete():
         logging.error("Error in delete_passkey_complete")
         traceback.print_exc()
         return _json_error("Passkey verification failed. Please try again.", 400)
+
+
+# ---------------------------------------------------------------------------
+# Password reset (email code only; sign-in still needs TOTP + passkey afterwards)
+# ---------------------------------------------------------------------------
+def get_reset_flow():
+    flow = session.get("reset")
+    if flow:
+        try:
+            if utcnow() - datetime.fromisoformat(flow["t"]) < RESET_TTL:
+                return flow
+        except Exception:
+            pass
+    session.pop("reset", None)
+    return None
+
+
+def _send_reset_code(email):
+    """Email a reset code if a password account owns this address. Never reveals whether it does."""
+    user = get_user_by_verified_email(email)
+    if user and user.get("auth_provider") == "password" and user.get("password"):
+        ok, msg = issue_email_code(user["id"], "reset", email)
+        if not ok:
+            app.logger.warning("Reset code not sent for user %s: %s", user["id"], msg)
+        else:
+            log_event("password_reset_requested", {"user_id": user["id"]})
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+@limiter.limit("5 per minute; 15 per hour", methods=["POST"])
+def forgot_password():
+    if session.get("logged_in"):
+        return redirect(url_for("login"))
+
+    error = None
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        if not validate_csrf_token():
+            error = "Invalid request. Please try again."
+        elif not validate_email(email) or len(email) > 254:
+            error = "Please enter a valid email address."
+        else:
+            _send_reset_code(email)
+            session["reset"] = {"email": email, "t": utcnow().isoformat()}
+            flash("If that email belongs to an account, a reset code is on its way.", "success")
+            return redirect(url_for("reset_password"))
+
+    return render_template("forgot_password.html", error=error, csrf_token=generate_csrf_token())
+
+
+@app.route("/reset-password", methods=["GET", "POST"])
+@limiter.limit("10 per minute", methods=["POST"])
+def reset_password():
+    if session.get("logged_in"):
+        return redirect(url_for("login"))
+    flow = get_reset_flow()
+    if not flow:
+        flash("Enter your email first to get a reset code.", "warning")
+        return redirect(url_for("forgot_password"))
+
+    error = None
+    if request.method == "POST":
+        if not validate_csrf_token():
+            error = "Invalid request. Please try again."
+        elif request.form.get("do") == "resend":
+            _send_reset_code(flow["email"])
+            flash("If that email belongs to an account, a new code is on its way.", "success")
+            return redirect(url_for("reset_password"))
+        else:
+            code = re.sub(r"[^A-Z0-9]", "", request.form.get("code", "").upper())
+            password = request.form.get("password", "").encode("utf-8")
+            confirm = request.form.get("confirm", "").encode("utf-8")
+            if not RESET_CODE_REGEX.match(code):
+                error = "Enter the 8-character code from the email."
+            elif len(password) < 8:
+                error = "Password must be at least 8 characters long!"
+            elif len(password) > 72:
+                error = "Password must be 72 bytes or fewer."
+            elif password != confirm:
+                error = "The two passwords don't match."
+            else:
+                user = get_user_by_verified_email(flow["email"])
+                ok = False
+                if user and user.get("auth_provider") == "password" and user.get("password"):
+                    ok, _msg, sent_to = check_email_code(user["id"], "reset", code)
+                    ok = ok and sent_to == flow["email"]
+                if ok:
+                    hashed = bcrypt.hashpw(password, bcrypt.gensalt()).decode("utf-8")
+                    db_run(
+                        "UPDATE users SET password = %s, failed_login_attempts = 0, "
+                        "account_locked_until = NULL WHERE id = %s",
+                        (hashed, user["id"]), admin=True,
+                    )
+                    log_event("password_reset_done", {"user_id": user["id"]}, "WARNING")
+                    session.clear()
+                    flash("Password updated. Sign in with your new password.", "success")
+                    return redirect(url_for("login"))
+                error = "That code is incorrect or has expired."
+
+    return render_template("reset_password.html", error=error, masked_email=mask_email(flow["email"]),
+                           csrf_token=generate_csrf_token())
 
 
 # ---------------------------------------------------------------------------

@@ -13,41 +13,47 @@ This document describes what the application actually implements, and what it do
 - Sessions: HttpOnly, Secure, SameSite=Lax cookies; 30-minute lifetime, refreshed on activity
 - `/emergency-logout` clears the session during the sign-in process
 
-### 2. Account deletion
+### 2. Password reset
+- Email-only verification: an 8-character code (letters and digits, no look-alikes) sent to the verified email of a password account
+- The page answers the same way whether or not the email exists; Google-only accounts get no code
+- Same code protections as below (HMAC-hashed, single use, 10-minute expiry, 5 attempts, resend limits); a successful reset also clears any lockout
+- Resetting the password does not bypass TOTP or the passkey: both are still required to sign in
+
+### 3. Account deletion
 - Requires a fully signed-in session, then re-verifies: password (or Google account), emailed code, TOTP code and a passkey (user verification required)
 - Finishes with a typed phrase and a confirmation dialog; the whole flow expires after 10 minutes and is cancelled after 5 wrong answers
 - Deletes the account, passkeys and email codes in one transaction
 
-### 3. Email codes
-- 6 random digits, stored only as an HMAC (keyed with `FLASK_PASS`), single use
+### 4. Email codes
+- 6 random digits (8 letters/digits for password reset), stored only as an HMAC (keyed with `FLASK_PASS`), single use
 - 10-minute expiry, 5 attempts per code, 45 seconds between sends, 5 codes per hour
 - Sent through an HTTPS email API (AgentMail or Resend); codes are never logged in production
 
-### 4. Request protection
+### 5. Request protection
 - CSRF token required on every POST (form field `csrf_token` or `X-CSRFToken` header)
 - Input validation: usernames `^[a-zA-Z0-9_]{3,20}$`, codes `^\d{6}$`, passwords 8 to 72 bytes
 - Parameterized SQL queries (psycopg2)
 
-### 5. Rate limiting and lockout (Flask-Limiter)
+### 6. Rate limiting and lockout (Flask-Limiter)
 - Default: 2000 requests/day and 300/hour per IP
-- Login 5/minute and 20/hour; registration 5/minute; TOTP setup 10/minute; email code 15/minute; Google 15-20/minute; deletion 40/hour (POST requests only)
+- Login 5/minute and 20/hour; registration 5/minute; password reset 5/minute and 15/hour; TOTP setup 10/minute; email code 15/minute; Google 15-20/minute; deletion 40/hour (POST requests only)
 - Account lockout: 5 failed password logins lock the account for 15 minutes
 - Exceeding a limit shows the 429 error page
 
-### 6. Security headers
+### 7. Security headers
 - Content-Security-Policy with a fresh nonce per request for scripts and styles
 - Strict-Transport-Security, X-Frame-Options: DENY, X-Content-Type-Options: nosniff
 - Referrer-Policy: strict-origin-when-cross-origin, Permissions-Policy, Cache-Control: no-store
 
 The CSP allows only same-origin resources plus `cdn.jsdelivr.net`, Google Fonts styles and font files. Inline `<style>` blocks and `style=""` attributes are blocked unless nonce-tagged, so keep styling in `static/css/style.css`.
 
-### 7. Database
+### 8. Database
 - Row-Level Security policies in `supabase_rls_policies.sql`
 - The app sets `app.current_user_id` (or `app.is_admin` for registration, lookups and deletion) on each connection
 
-### 8. Error handling and logging
+### 9. Error handling and logging
 - One handler renders all HTTP errors with fixed, generic messages; exception text is never sent to the browser
-- Security events (login success/failure, registration, lockout, account deletion) go through `security_logging.py`
+- Security events (login success/failure, registration, lockout, password reset, account deletion) go through `security_logging.py`
 
 ## Known limitations
 

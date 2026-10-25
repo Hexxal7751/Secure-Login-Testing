@@ -15,6 +15,7 @@ A Flask authentication demo with **username + password or Google sign-in**, **TO
 - **Two ways in**: username + password (with email verification at sign-up) or "Continue with Google"
 - **Three-layer sign-in**: first factor → TOTP code → passkey
 - **Passkeys (WebAuthn)** required before the dashboard is reachable
+- **Password reset** by emailed 8-character code (email verification only; signing in afterwards still needs TOTP and a passkey)
 - **Account deletion** that re-checks every factor (password or Google, email code, TOTP, passkey) and ends with a typed confirmation
 - **Rate limiting** and a temporary **account lockout** after repeated failed logins
 - **CSRF tokens** on every form and passkey request
@@ -40,6 +41,8 @@ A Flask authentication demo with **username + password or Google sign-in**, **TO
 5. Dashboard
 
 **Returning user**: sign in with your password *or* Google → TOTP code → passkey → dashboard. No email code is needed to sign in.
+
+**Forgot password**: Forgot your password? → enter your email → type the 8-character code and a new password → sign in as usual (TOTP, then passkey). Google accounts have no password to reset.
 
 **Delete account** (dashboard → Delete account): password (or Google) → email code → TOTP → passkey → type `DELETE <username>` and confirm.
 
@@ -91,7 +94,7 @@ With `FLASK_ENV=development` and no email provider set, codes are printed to the
 | Google | OpenID Connect code flow with `state` and `nonce` checks |
 | 2FA | TOTP (pyotp), 6-digit codes |
 | Passkeys | WebAuthn registration + authentication |
-| Email codes | 6 digits, HMAC-hashed in the database, 10-minute expiry, 5 attempts, resend limits |
+| Email codes | 6 digits (8 letters/digits for password reset), HMAC-hashed in the database, 10-minute expiry, 5 attempts, resend limits |
 | Sessions | HttpOnly, Secure, SameSite=Lax, 30-minute lifetime |
 | CSRF | Per-session token checked on every POST |
 | Rate limits | Default 2000/day and 300/hour per IP; stricter limits on login, register, Google, email codes and deletion |
@@ -117,7 +120,7 @@ security_middleware.py      Input validation helpers (validate_email is used by 
 security_logging.py         Security event logging
 supabase_rls_policies.sql   Tables and Row-Level Security policies
 requirements.txt            Python dependencies
-templates/                  Jinja pages (login, register, verify_email, choose_username,
+templates/                  Jinja pages (login, register, forgot/reset password, verify_email, choose_username,
                             setup/verify TOTP + passkey, dashboard, delete_account, error)
 static/css/style.css        All styling (no inline styles, CSP-safe)
 static/js/app.js            UI behaviour and passkey calls
