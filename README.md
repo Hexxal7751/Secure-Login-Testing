@@ -1,6 +1,6 @@
 # 🔐 Secure Login Testing
 
-A Flask authentication demo that combines **username + password**, **TOTP two-factor authentication** and **mandatory passkeys (WebAuthn)**, wrapped in a dark, animated, mobile-friendly UI.
+A Flask authentication demo with **username + password or Google sign-in**, **TOTP two-factor authentication** and **mandatory passkeys (WebAuthn)**, wrapped in a dark, animated, mobile-friendly UI.
 
 **Live demo:** [sltesting.onrender.com](https://sltesting.onrender.com)
 
@@ -12,127 +12,120 @@ A Flask authentication demo that combines **username + password**, **TOTP two-fa
 
 ## ✨ Features
 
-- **Three-layer sign-in**: password → TOTP code → passkey
+- **Two ways in**: username + password (with email verification at sign-up) or "Continue with Google"
+- **Three-layer sign-in**: first factor → TOTP code → passkey
 - **Passkeys (WebAuthn)** required before the dashboard is reachable
-- **Rate limiting** and a temporary **IP lockout** after repeated failed logins
+- **Account deletion** that re-checks every factor (password or Google, email code, TOTP, passkey) and ends with a typed confirmation
+- **Rate limiting** and a temporary **account lockout** after repeated failed logins
 - **CSRF tokens** on every form and passkey request
 - **Strict Content-Security-Policy** with per-request nonces, plus HSTS, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, `Permissions-Policy` and `no-store` caching
 - **Row-Level Security** policies for Supabase/Postgres (`supabase_rls_policies.sql`)
 - **Security event logging** (`security_logging.py`)
-- **Responsive, touch-friendly UI** with reduced-motion support
 - **Branded error pages** for 400/403/404/405/429/500 and more
 
 ## 🔄 Authentication flow
 
-**New user**
-
-1. Register with a username and password
-2. Log in
-3. Set up TOTP (scan the QR code, confirm a 6-digit code)
+**New user, password path**
+1. Register (username, email, password)
+2. Enter the 6-digit code emailed to you (registration only)
+3. Set up TOTP (scan the QR code, confirm a code)
 4. Register a passkey (mandatory)
 5. Dashboard
 
-**Returning user**
+**New user, Google path**
+1. Continue with Google
+2. Choose a username
+3. Set up TOTP
+4. Register a passkey
+5. Dashboard
 
-1. Log in with username and password
-2. Verify the TOTP code
-3. Verify with your passkey (or set one up if you haven't yet)
-4. Dashboard
+**Returning user**: sign in with your password *or* Google → TOTP code → passkey → dashboard. No email code is needed to sign in.
 
-```
-Register → Login → TOTP setup → TOTP verify → Passkey → Dashboard
-```
+**Delete account** (dashboard → Delete account): password (or Google) → email code → TOTP → passkey → type `DELETE <username>` and confirm.
 
 ## 🚀 Quick start
 
-### 1. Install
-
 ```bash
 pip install -r requirements.txt
+python app.py        # http://localhost:10000
 ```
 
-### 2. Configure
-
-Create a `.env` file:
+### Environment (`.env`)
 
 ```env
 # Flask
 FLASK_PASS=change-me-to-a-long-random-secret
-FLASK_ENV=development
+FLASK_ENV=development            # use production on Render
 
 # Database (Supabase / PostgreSQL connection string)
 SUPABASE_URL=postgresql://username:password@host:port/database
 
-# WebAuthn
-# Local development:
-RP_ID=localhost
-ORIGIN=http://localhost:10000
-# Production example:
-# RP_ID=yourdomain.com
-# ORIGIN=https://yourdomain.com
+# WebAuthn (local: localhost / http://localhost:10000)
+RP_ID=yourdomain.com
+ORIGIN=https://yourdomain.com
+
+# Google sign-in (Google Cloud → OAuth web client)
+# Redirect URI to register: <ORIGIN>/auth/google/callback
+GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-xxxx
+
+# Email codes: choose ONE option
+# A) AgentMail (no domain needed)
+AGENTMAIL_API_KEY=am_xxxx
+AGENTMAIL_INBOX=your-inbox@agentmail.to
+# B) Resend (needs a domain you own)
+# RESEND_API_KEY=re_xxxx
+# MAIL_FROM=login@yourdomain.com
+# MAIL_FROM_NAME=Secure Login Testing
 ```
 
-### 3. Run
+With `FLASK_ENV=development` and no email provider set, codes are printed to the server log instead of being emailed.
 
-```bash
-python app.py
-```
-
-Open <http://localhost:10000>.
-
-> Session cookies are marked `Secure`, so some browsers won't keep the session over plain `http://`. Chrome and Firefox treat `localhost` as secure; if you test on another host, use HTTPS.
+> Session cookies are marked `Secure`; Chrome and Firefox treat `localhost` as secure, other hosts need HTTPS.
 
 ## 🛡️ Security summary
 
 | Area | What the app does |
 | --- | --- |
-| Passwords | Hashed with bcrypt |
+| Passwords | bcrypt (Google accounts have none) |
+| Google | OpenID Connect code flow with `state` and `nonce` checks |
 | 2FA | TOTP (pyotp), 6-digit codes |
 | Passkeys | WebAuthn registration + authentication |
+| Email codes | 6 digits, HMAC-hashed in the database, 10-minute expiry, 5 attempts, resend limits |
 | Sessions | HttpOnly, Secure, SameSite=Lax, 30-minute lifetime |
 | CSRF | Per-session token checked on every POST |
-| Rate limits | Default 200/day and 50/hour per IP; login 5/min and 20/hour; register 5/min; TOTP setup 5/min |
-| Lockout | 5 failed logins from an IP → blocked for 15 minutes |
-| Headers | CSP (nonce-based scripts), HSTS, X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy |
+| Rate limits | Default 2000/day and 300/hour per IP; stricter limits on login, register, Google, email codes and deletion |
+| Lockout | 5 failed logins lock the account for 15 minutes |
 | Database | Parameterized queries; RLS policies provided |
 
-Rate-limit counters and IP lockouts are stored **in memory**, so they reset when the server restarts and aren't shared between multiple workers. See [SECURITY.md](./SECURITY.md) for details and known limitations.
-
-## 🌐 Browser support
-
-Passkeys work on Chrome 67+, Safari 13+ and Edge 18+ (desktop and mobile), and Firefox 60+ (desktop).
+Rate-limit counters are stored **in memory** (reset on restart, not shared between workers). See [SECURITY.md](./SECURITY.md).
 
 ## 🚢 Production checklist
 
-1. Set `FLASK_ENV=production` (enables HTTPS redirect and proxy headers)
-2. Set `RP_ID` to your domain and `ORIGIN` to its HTTPS URL
-3. Use a long, random `FLASK_PASS`
-4. Serve over HTTPS
-5. Apply `supabase_rls_policies.sql` to your database
+1. `FLASK_ENV=production` (HTTPS redirect and proxy headers)
+2. `RP_ID` = your domain, `ORIGIN` = its HTTPS URL
+3. Long random `FLASK_PASS`
+4. Add `<ORIGIN>/auth/google/callback` as an authorized redirect URI in Google Cloud
+5. Configure one email provider (see above)
+6. Apply `supabase_rls_policies.sql`
 
 ## 🗂️ Project structure
 
 ```
-app.py                      Flask app, routes, security headers, error handling
-db_middleware.py            Database / RLS context helpers
-security_middleware.py      Input validation helpers
+app.py                      Flask app: routes, Google, email codes, deletion, headers, errors
+security_middleware.py      Input validation helpers (validate_email is used by app.py)
 security_logging.py         Security event logging
-supabase_rls_policies.sql   Row-Level Security policies
-templates/                  Jinja pages (login, register, TOTP, passkey, dashboard, error.html)
-static/style.css            All styling (no inline styles, CSP-safe)
+supabase_rls_policies.sql   Tables and Row-Level Security policies
+requirements.txt            Python dependencies
+templates/                  Jinja pages (login, register, verify_email, choose_username,
+                            setup/verify TOTP + passkey, dashboard, delete_account, error)
+static/css/style.css        All styling (no inline styles, CSP-safe)
+static/js/app.js            UI behaviour and passkey calls
 ```
-
-## 🎨 UI notes
-
-- Dark glass theme with gradients, animated stepper, OTP input and passkey orb
-- Fonts: Plus Jakarta Sans and JetBrains Mono (system fonts as fallback)
-- **All CSS lives in `static/style.css`.** The CSP blocks inline `<style>` and `style=""`, so don't add them; put new rules in the stylesheet.
-- On phones and touch devices the UI drops the heaviest effects (large blur filters, backdrop blur on cards, 3D tilt, endless gradient animations) to stay smooth and avoid flicker
-- `prefers-reduced-motion` turns animations off
 
 ## 🚧 Error pages
 
-Every HTTP error is rendered by `templates/error.html` from a single handler in `app.py` (`ERROR_PAGES` holds the titles and messages). Requests to `/passkey/*`, `/check-username` and JSON requests get a JSON `{"error": "..."}` response instead of HTML. To customize a message or add a status code, edit `ERROR_PAGES`.
+Every HTTP error is rendered by `templates/error.html` from one handler in `app.py` (`ERROR_PAGES` holds the titles and messages). Requests to `/passkey/*`, `/account/delete/passkey/*`, `/check-username` and JSON requests get `{"error": "..."}` instead of HTML.
 
 ## 📄 License
 

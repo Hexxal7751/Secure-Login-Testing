@@ -6,7 +6,7 @@ import os
 import json
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from flask import request, g
+from flask import request, session, has_request_context
 
 # Configure security logger
 security_logger = logging.getLogger('security')
@@ -29,23 +29,21 @@ formatter = logging.Formatter(
 security_handler.setFormatter(formatter)
 security_logger.addHandler(security_handler)
 
+
 def log_security_event(event_type, details, level='INFO'):
     """
     Log a security event with standardized format
-    
+
     Args:
         event_type: Type of security event (login_success, login_failure, etc.)
         details: Dict containing event details
         level: Logging level (INFO, WARNING, ERROR, CRITICAL)
     """
-    # Get IP and user agent if available
-    ip = request.remote_addr if request else 'unknown'
-    user_agent = request.headers.get('User-Agent', 'unknown') if request else 'unknown'
-    
-    # Get user ID if available
-    user_id = g.get('user_id', 'anonymous') if 'g' in globals() else 'anonymous'
-    
-    # Create log entry
+    in_request = has_request_context()
+    ip = request.remote_addr if in_request else 'unknown'
+    user_agent = request.headers.get('User-Agent', 'unknown') if in_request else 'unknown'
+    user_id = session.get('user_id', 'anonymous') if in_request else 'anonymous'
+
     log_entry = {
         'timestamp': datetime.now().isoformat(),
         'event_type': event_type,
@@ -54,8 +52,7 @@ def log_security_event(event_type, details, level='INFO'):
         'user_agent': user_agent,
         'details': details
     }
-    
-    # Log at appropriate level
+
     log_message = json.dumps(log_entry)
     if level == 'WARNING':
         security_logger.warning(log_message)
@@ -66,12 +63,14 @@ def log_security_event(event_type, details, level='INFO'):
     else:
         security_logger.info(log_message)
 
+
 # Security event types
 LOGIN_SUCCESS = 'login_success'
 LOGIN_FAILURE = 'login_failure'
 REGISTRATION = 'user_registration'
 PASSWORD_CHANGE = 'password_change'
 ACCOUNT_LOCKOUT = 'account_lockout'
+ACCOUNT_DELETED = 'account_deleted'
 SUSPICIOUS_ACTIVITY = 'suspicious_activity'
 PERMISSION_DENIED = 'permission_denied'
 ADMIN_ACTION = 'admin_action'

@@ -86,13 +86,14 @@ GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 # Email is sent over HTTPS (Render's free tier blocks SMTP). Pick ONE option in .env:
-#  A) Gmail relay (no domain needed): MAIL_WEBHOOK_URL + MAIL_WEBHOOK_SECRET  (see mail_relay.gs)
-#  B) Resend (needs a domain you own): RESEND_API_KEY + MAIL_FROM
-MAIL_WEBHOOK_URL = os.getenv("MAIL_WEBHOOK_URL", "").strip()
-MAIL_WEBHOOK_SECRET = os.getenv("MAIL_WEBHOOK_SECRET", "").strip()
+#  A) AgentMail (no domain needed): AGENTMAIL_API_KEY + AGENTMAIL_INBOX (e.g. sltesting@agentmail.to)
+#  B) Resend (needs a domain you own): RESEND_API_KEY + MAIL_FROM (e.g. login@yourdomain.com)
+AGENTMAIL_API_KEY = os.getenv("AGENTMAIL_API_KEY", "").strip()
+AGENTMAIL_INBOX = os.getenv("AGENTMAIL_INBOX", "").strip()
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
 MAIL_FROM = os.getenv("MAIL_FROM", "").strip()
 MAIL_FROM_NAME = os.getenv("MAIL_FROM_NAME", "Secure Login Testing").strip()
+HTTP_UA = "secure-login-testing/1.0"
 
 EMAIL_CODE_TTL = timedelta(minutes=10)
 EMAIL_CODE_MAX_ATTEMPTS = 5
@@ -111,33 +112,6 @@ limiter = Limiter(
 )
 
 login_limit = "5 per minute; 20 per hour"
-
-# Track failed login attempts per IP (helpers kept for optional use)
-failed_attempts = {}
-LOCKOUT_THRESHOLD = 5
-LOCKOUT_TIME = 15 * 60
-
-
-def is_ip_blocked(ip):
-    if ip in failed_attempts:
-        attempts, timestamp = failed_attempts[ip]
-        if attempts >= LOCKOUT_THRESHOLD:
-            if datetime.now().timestamp() - timestamp < LOCKOUT_TIME:
-                return True
-            failed_attempts[ip] = (0, datetime.now().timestamp())
-    return False
-
-
-def record_failed_attempt(ip):
-    now = datetime.now().timestamp()
-    attempts = failed_attempts.get(ip, (0, now))[0]
-    failed_attempts[ip] = (attempts + 1, now)
-
-
-def reset_failed_attempts(ip):
-    if ip in failed_attempts:
-        failed_attempts[ip] = (0, datetime.now().timestamp())
-
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -431,59 +405,45 @@ def delete_user_everything(user_id):
 # ---------------------------------------------------------------------------
 # Email sending + one-time codes
 # ---------------------------------------------------------------------------
-def _send_via_resend(to_email, subject, text):
-    payload = {
-        "from": f"{MAIL_FROM_NAME} <{MAIL_FROM}>",
-        "to": [to_email],
-        "subject": subject,
-        "text": text,
-    }
+def _post_json(url, payload, headers):
     req = urllib.request.Request(
-        "https://api.resend.com/emails",
+        url,
         data=json.dumps(payload).encode("utf-8"),
-        # Resend blocks the default Python User-Agent, so we set our own
-        headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json",
-                 "User-Agent": "secure-login-testing/1.0"},
+        headers={**headers, "Content-Type": "application/json", "User-Agent": HTTP_UA},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         return 200 <= resp.status < 300
 
 
-def _send_via_relay(to_email, subject, text):
-    payload = {
-        "secret": MAIL_WEBHOOK_SECRET,
-        "to": to_email,
-        "subject": subject,
-        "message": text,
-        "name": MAIL_FROM_NAME,
-    }
-    req = urllib.request.Request(
-        MAIL_WEBHOOK_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+def _send_via_resend(to_email, subject, text):
+    return _post_json(
+        "https://api.resend.com/emails",
+        {"from": f"{MAIL_FROM_NAME} <{MAIL_FROM}>", "to": [to_email], "subject": subject, "text": text},
+        {"Authorization": f"Bearer {RESEND_API_KEY}"},
     )
-    # Apps Script answers a POST with a redirect; urllib follows it automatically.
-    with urllib.request.urlopen(req, timeout=25) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-    if body.get("ok") is True:
-        return True
-    app.logger.error("Mail relay refused the email: %s", str(body.get("error"))[:200])
-    return False
+
+
+def _send_via_agentmail(to_email, subject, text):
+    inbox = urllib.parse.quote(AGENTMAIL_INBOX, safe="@")
+    return _post_json(
+        f"https://api.agentmail.to/v0/inboxes/{inbox}/messages/send",
+        {"to": [to_email], "subject": subject, "text": text},
+        {"Authorization": f"Bearer {AGENTMAIL_API_KEY}"},
+    )
 
 
 def send_email(to_email, subject, text):
     """Send one plain-text email. Returns True on success."""
     if RESEND_API_KEY and MAIL_FROM:
         sender = _send_via_resend
-    elif MAIL_WEBHOOK_URL and MAIL_WEBHOOK_SECRET:
-        sender = _send_via_relay
+    elif AGENTMAIL_API_KEY and AGENTMAIL_INBOX:
+        sender = _send_via_agentmail
     else:
         if os.getenv("FLASK_ENV") == "development":
             app.logger.warning("[DEV EMAIL] to=%s subject=%s\n%s", to_email, subject, text)
             return True
-        app.logger.error("Email is not configured (set MAIL_WEBHOOK_URL + MAIL_WEBHOOK_SECRET, or RESEND_API_KEY + MAIL_FROM).")
+        app.logger.error("Email is not configured (set AGENTMAIL_API_KEY + AGENTMAIL_INBOX, or RESEND_API_KEY + MAIL_FROM).")
         return False
     try:
         return sender(to_email, subject, text)

@@ -274,7 +274,7 @@
       btn.classList.add('loading'); set('wait', d.mode === 'register' ? 'Waiting for your device…' : 'Confirm with your passkey…');
       try {
         const dest = await (d.mode === 'register' ? registerPasskey(d) : authPasskey(d));
-        set('ok', d.mode === 'register' ? 'Passkey created. Verifying…' : 'Verified. Opening your dashboard…');
+        set('ok', d.mode === 'register' ? 'Passkey created. Verifying…' : 'Verified. Continuing…');
         await wait(1000); document.body.classList.add('leaving'); location.href = dest;
       } catch (err) {
         btn.classList.remove('loading');

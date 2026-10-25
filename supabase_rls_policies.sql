@@ -1,37 +1,49 @@
--- Supabase Row-Level Security (RLS) Policies
--- This script implements RLS policies for the users and passkeys tables
+-- Supabase / PostgreSQL Row-Level Security for Secure Login Testing.
+-- Safe to run more than once. The app also creates/updates these tables itself on
+-- startup, so you only need this file to enable and (re)apply the policies.
 
--- Step 1:-- Create tables if they don't exist
+-- 1) Tables (same shape the app creates)
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
-    username VARCHAR(255) NOT NULL UNIQUE,
-    password VARCHAR(255) NOT NULL,
-    totp_secret VARCHAR(255),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    username VARCHAR(100) UNIQUE NOT NULL,
+    password TEXT,                              -- NULL for Google accounts
+    secret TEXT,                                -- TOTP secret
+    passkey_enabled BOOLEAN DEFAULT FALSE,
+    email TEXT,
+    email_verified BOOLEAN DEFAULT FALSE,
+    google_sub TEXT,
+    auth_provider VARCHAR(10) DEFAULT 'password',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    failed_login_attempts INTEGER DEFAULT 0,
+    account_locked_until TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS passkeys (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER REFERENCES users(id),
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     credential_id TEXT NOT NULL UNIQUE,
     public_key TEXT NOT NULL,
     sign_count INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Enable Row Level Security for users and passkeys tables
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE passkeys ENABLE ROW LEVEL SECURITY;
+CREATE TABLE IF NOT EXISTS email_codes (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    purpose VARCHAR(20) NOT NULL,
+    email TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    used BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL
+);
 
--- Step 2: Create policies for the users table
-
--- Step 4: Create a function to get the current user ID from the app
--- This helps bridge the gap between your Flask app and PostgreSQL RLS
-
+-- 2) Helper functions (the app sets app.current_user_id / app.is_admin per connection)
 CREATE OR REPLACE FUNCTION get_session_user_id()
 RETURNS INTEGER AS $$
 BEGIN
-    -- This will be set by your application when making database calls
     RETURN current_setting('app.current_user_id', TRUE)::INTEGER;
 EXCEPTION
     WHEN OTHERS THEN
@@ -39,54 +51,6 @@ EXCEPTION
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Policy: Users can only view their own data
-CREATE POLICY users_select_policy ON users
-    FOR SELECT
-    USING (id = get_session_user_id() OR get_session_user_id() IS NULL);
-
--- Policy: Users can only update their own data
-CREATE POLICY users_update_policy ON users
-    FOR UPDATE
-    USING (id = get_session_user_id());
-
--- Policy: Users cannot delete their own accounts (admin only operation)
--- If you need user deletion, create a separate endpoint with proper authorization
-
--- Policy: Allow admin access for certain operations
-CREATE POLICY users_admin_policy ON users
-    FOR ALL
-    USING (current_setting('app.is_admin', TRUE)::BOOLEAN = TRUE);
-
--- Step 3: Create policies for the passkeys table
-
--- Policy: Users can only view their own passkeys
-CREATE POLICY passkeys_select_policy ON passkeys
-    FOR SELECT
-    USING (user_id = get_session_user_id() OR get_session_user_id() IS NULL);
-
--- Policy: Users can only insert their own passkeys
-CREATE POLICY passkeys_insert_policy ON passkeys
-    FOR INSERT
-    WITH CHECK (user_id = get_session_user_id());
-
--- Policy: Users can only update their own passkeys
-CREATE POLICY passkeys_update_policy ON passkeys
-    FOR UPDATE
-    USING (user_id = get_session_user_id());
-
--- Policy: Users can only delete their own passkeys
-CREATE POLICY passkeys_delete_policy ON passkeys
-    FOR DELETE
-    USING (user_id = get_session_user_id());
-
--- Policy: Allow admin access for certain operations
-CREATE POLICY passkeys_admin_policy ON passkeys
-    FOR ALL
-    USING (current_setting('app.is_admin', TRUE)::BOOLEAN = TRUE);
-
--- Step 4: Additional settings for admin access
-
--- Create a function to check if the current connection has admin privileges
 CREATE OR REPLACE FUNCTION is_admin()
 RETURNS BOOLEAN AS $$
 BEGIN
@@ -97,33 +61,59 @@ EXCEPTION
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Step 5: Instructions for application integration
+COMMENT ON FUNCTION get_session_user_id() IS 'Set with: SET app.current_user_id = <user_id>';
+COMMENT ON FUNCTION is_admin() IS 'Set with: SET app.is_admin = true';
 
-/*
-To use these RLS policies in your Flask application:
+-- 3) Enable RLS
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE passkeys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_codes ENABLE ROW LEVEL SECURITY;
 
-1. When connecting to the database, set the current user ID:
-   
-   EXECUTE 'SET app.current_user_id = ' || user_id;
-   
-2. For admin operations, set the admin flag:
-   
-   EXECUTE 'SET app.is_admin = true';
-   
-3. Reset after operations:
-   
-   EXECUTE 'RESET app.current_user_id';
-    EXECUTE 'RESET app.is_admin';
-*/
+-- 4) users policies
+DROP POLICY IF EXISTS users_select_policy ON users;
+CREATE POLICY users_select_policy ON users
+    FOR SELECT
+    USING (id = get_session_user_id() OR get_session_user_id() IS NULL);
 
--- Step 6: Add instructions for setting the user ID in your application
-COMMENT ON FUNCTION get_session_user_id() IS 'Set the user ID with: SET app.current_user_id = <user_id>';
-COMMENT ON FUNCTION is_admin() IS 'Set admin mode with: SET app.is_admin = true';
+DROP POLICY IF EXISTS users_update_policy ON users;
+CREATE POLICY users_update_policy ON users
+    FOR UPDATE
+    USING (id = get_session_user_id());
 
--- Appended to supabase_rls_policies.sql (or run once in the Supabase SQL editor).
--- The app creates the email_codes table itself on startup; this only locks it down.
-ALTER TABLE IF EXISTS email_codes ENABLE ROW LEVEL SECURITY;
+-- Inserts and deletes (registration, account deletion) go through admin mode only.
+DROP POLICY IF EXISTS users_admin_policy ON users;
+CREATE POLICY users_admin_policy ON users
+    FOR ALL
+    USING (is_admin());
+
+-- 5) passkeys policies
+DROP POLICY IF EXISTS passkeys_select_policy ON passkeys;
+CREATE POLICY passkeys_select_policy ON passkeys
+    FOR SELECT
+    USING (user_id = get_session_user_id() OR get_session_user_id() IS NULL);
+
+DROP POLICY IF EXISTS passkeys_insert_policy ON passkeys;
+CREATE POLICY passkeys_insert_policy ON passkeys
+    FOR INSERT
+    WITH CHECK (user_id = get_session_user_id());
+
+DROP POLICY IF EXISTS passkeys_update_policy ON passkeys;
+CREATE POLICY passkeys_update_policy ON passkeys
+    FOR UPDATE
+    USING (user_id = get_session_user_id());
+
+DROP POLICY IF EXISTS passkeys_delete_policy ON passkeys;
+CREATE POLICY passkeys_delete_policy ON passkeys
+    FOR DELETE
+    USING (user_id = get_session_user_id());
+
+DROP POLICY IF EXISTS passkeys_admin_policy ON passkeys;
+CREATE POLICY passkeys_admin_policy ON passkeys
+    FOR ALL
+    USING (is_admin());
+
+-- 6) email_codes: only the server (admin mode) can touch one-time codes
 DROP POLICY IF EXISTS email_codes_admin_policy ON email_codes;
 CREATE POLICY email_codes_admin_policy ON email_codes
     FOR ALL
-    USING (current_setting('app.is_admin', TRUE)::BOOLEAN = TRUE);
+    USING (is_admin());
