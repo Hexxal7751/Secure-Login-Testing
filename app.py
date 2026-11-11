@@ -106,6 +106,21 @@ DEL_TTL = timedelta(minutes=10)
 PENDING_GOOGLE_TTL = timedelta(minutes=15)
 RESET_TTL = timedelta(minutes=15)
 
+def check_config():
+    """Log obvious configuration mistakes at startup (values are never printed)."""
+    if not os.getenv("FLASK_PASS"):
+        app.logger.error("FLASK_PASS is not set: sessions will not work.")
+    url = os.getenv("SUPABASE_URL") or ""
+    if not url.startswith(("postgresql://", "postgres://")):
+        app.logger.error("SUPABASE_URL is missing or doesn't start with postgresql://")
+    if GOOGLE_CLIENT_ID and not GOOGLE_CLIENT_ID.endswith(".apps.googleusercontent.com"):
+        app.logger.warning("GOOGLE_CLIENT_ID doesn't end with .apps.googleusercontent.com")
+    if GOOGLE_CLIENT_ID and not (GOOGLE_CLIENT_SECRET.startswith("GOCSPX-") and len(GOOGLE_CLIENT_SECRET) == 35):
+        app.logger.warning(
+            "GOOGLE_CLIENT_SECRET looks wrong: expected 35 characters starting with GOCSPX-, got %d characters.",
+            len(GOOGLE_CLIENT_SECRET))
+
+
 # ---------------------------------------------------------------------------
 # Rate limiting
 # ---------------------------------------------------------------------------
@@ -225,11 +240,18 @@ def validate_csrf_token():
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
+def _connect():
+    url = os.getenv("SUPABASE_URL")
+    if not url:
+        raise RuntimeError("SUPABASE_URL is not set")
+    return psycopg2.connect(url, connect_timeout=10)
+
+
 def get_db_connection(user_id=None):
     if user_id is None and has_request_context() and "user_id" in session:
         user_id = session["user_id"]
 
-    conn = psycopg2.connect(os.getenv("SUPABASE_URL"))
+    conn = _connect()
 
     if user_id is not None:
         with conn.cursor() as cur:
@@ -244,7 +266,7 @@ def get_db_connection(user_id=None):
 
 def get_admin_connection():
     """Connection that always runs in admin mode (inserts, deletes, lookups)."""
-    conn = psycopg2.connect(os.getenv("SUPABASE_URL"))
+    conn = _connect()
     with conn.cursor() as cur:
         cur.execute("SET app.is_admin = true")
         conn.commit()
@@ -343,11 +365,16 @@ def create_users_table():
 def init_db():
     try:
         create_users_table()
+    except psycopg2.OperationalError as e:
+        app.logger.error(
+            "Database setup failed: %s | Check SUPABASE_URL in Render (copy a fresh connection "
+            "string from Supabase -> Connect, make sure the project isn't paused).", str(e).strip()[:300])
     except Exception:
         app.logger.exception("Database setup failed")
 
 
 # Runs under gunicorn too (the old code only ran this under `python app.py`)
+check_config()
 init_db()
 
 
@@ -1755,6 +1782,12 @@ def render_error(code, extra_headers=None):
         if key.lower() not in ("content-type", "content-length"):
             response.headers[key] = value
     return response
+
+
+@app.errorhandler(psycopg2.OperationalError)
+def handle_db_down(e):
+    app.logger.error("Database unavailable: %s", str(e).strip()[:300])
+    return render_error(503)
 
 
 @app.errorhandler(Exception)

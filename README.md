@@ -60,8 +60,10 @@ python app.py        # http://localhost:10000
 FLASK_PASS=change-me-to-a-long-random-secret
 FLASK_ENV=development            # use production on Render
 
-# Database (Supabase / PostgreSQL connection string)
-SUPABASE_URL=postgresql://username:password@host:port/database
+# Database: Supabase -> Connect -> Session pooler connection string (port 5432).
+# Render's free tier is IPv4-only, so use the pooler string, not the direct one.
+# URL-encode special characters in the password (@ becomes %40, # becomes %23).
+SUPABASE_URL=postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
 
 # WebAuthn (local: localhost / http://localhost:10000)
 RP_ID=yourdomain.com
@@ -111,6 +113,17 @@ Rate-limit counters are stored **in memory** (reset on restart, not shared betwe
 4. Add `<ORIGIN>/auth/google/callback` as an authorized redirect URI in Google Cloud
 5. Configure one email provider (see above)
 6. Apply `supabase_rls_policies.sql`
+
+## 🧰 Troubleshooting (Render logs)
+
+| Log message | Cause and fix |
+| --- | --- |
+| `FATAL: (ENOTFOUND) tenant/user ... not found` | `SUPABASE_URL` is wrong, or the Supabase project is paused. Restore the project, then copy a fresh pooler string from Supabase → Connect. |
+| `Google token endpoint returned 401 ... invalid_client` | `GOOGLE_CLIENT_SECRET` is wrong. Create a new secret in Google Cloud → Credentials → your Web client, copy it right away (35 characters starting `GOCSPX-`), paste it with no quotes or spaces. |
+| `redirect_uri_mismatch` | The redirect URI in Google Cloud must be exactly `<ORIGIN>/auth/google/callback`. |
+| `Email provider rejected the message` | Check the email API key and inbox/sender in `.env`, and the provider's sending limits. |
+
+The app prints a configuration warning at startup (without showing any secret) when it spots an obvious mistake.
 
 ## 🗂️ Project structure
 
