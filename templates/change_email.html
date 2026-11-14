@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, field, otp_form %}
+{% block title %}Change email - Secure Login Testing{% endblock %}
+{% block header_actions %}
+<a class="btn btn-ghost btn-sm" href="{{ url_for('account') }}">{{ icon('back') }}<span>Account</span></a>
+{% endblock %}
+{% block content %}
+<div class="auth">
+  <section class="card" data-tilt="4">
+    <div class="card-in stg">
+      <div class="hero-ic">{{ icon('mail') }}</div>
+      <h1 data-split>Change email</h1>
+      {% if stage in ('send_old', 'code_old') %}
+      <p class="sub">Step 1 of 2: confirm it’s you with a code sent to <strong>{{ masked_old }}</strong>.</p>
+      {% elif stage == 'new' %}
+      <p class="sub">Step 2 of 2: enter the new email address. We’ll send it a code.</p>
+      {% else %}
+      <p class="sub">Enter the code we sent to <strong>{{ masked_new }}</strong>.</p>
+      {% endif %}
+
+      {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
+
+      {% if stage == 'send_old' %}
+      <form method="post" action="{{ url_for('change_email') }}" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="do" value="send">
+        <button type="submit" class="btn btn-primary btn-block">{{ icon('mail') }}<span>Send code</span></button>
+      </form>
+
+      {% elif stage == 'code_old' %}
+      {{ otp_form(url_for('change_email'), csrf_token, error, 'Verify code', do='verify') }}
+      <div class="divider">
+        <form method="post" action="{{ url_for('change_email') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="do" value="send">
+          <button type="submit" class="linkbtn">Resend code</button>
+        </form>
+      </div>
+
+      {% elif stage == 'new' %}
+      <form method="post" action="{{ url_for('change_email') }}" class="stg2" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="do" value="new">
+        {{ field('email', 'email', 'New email', 'email', 'mail', 'email', 'autofocus maxlength="254"') }}
+        <button type="submit" class="btn btn-primary btn-block">{{ icon('mail') }}<span>Send code</span></button>
+      </form>
+
+      {% else %}
+      {{ otp_form(url_for('change_email'), csrf_token, error, 'Confirm new email', do='verify') }}
+      <div class="divider">
+        <form method="post" action="{{ url_for('change_email') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="do" value="resend">
+          <button type="submit" class="linkbtn">Resend code</button>
+        </form>
+      </div>
+      {% endif %}
+
+      <div class="divider"><a class="linkbtn" href="{{ url_for('account') }}">Cancel</a></div>
+    </div>
+  </section>
+</div>
+{% endblock %}

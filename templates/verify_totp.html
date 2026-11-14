@@ -16,6 +16,7 @@
       {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
       {{ otp_form(url_for('verify_totp_page'), csrf_token, error, 'Verify code') }}
       <p class="alt">Codes refresh every 30 seconds.</p>
+      <p class="alt"><a href="{{ url_for('recovery_login', kind='totp') }}">Lost your phone? Use a recovery code</a></p>
     </div>
   </section>
 </div>

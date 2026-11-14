@@ -25,7 +25,9 @@ CREATE TABLE IF NOT EXISTS passkeys (
     credential_id TEXT NOT NULL UNIQUE,
     public_key TEXT NOT NULL,
     sign_count INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    name TEXT,
+    last_used_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS email_codes (
@@ -39,6 +41,34 @@ CREATE TABLE IF NOT EXISTS email_codes (
     used BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS recovery_codes (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL,
+    used BOOLEAN DEFAULT FALSE,
+    used_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP NOT NULL,
+    last_seen TIMESTAMP NOT NULL,
+    ip TEXT,
+    user_agent TEXT,
+    device TEXT,
+    location TEXT,
+    method VARCHAR(12),
+    completed BOOLEAN DEFAULT FALSE,
+    revoked BOOLEAN DEFAULT FALSE,
+    ended_at TIMESTAMP
+);
+
+-- Columns added later (safe if the tables already exist from an older version)
+ALTER TABLE passkeys ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE passkeys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP;
 
 -- 2) Helper functions (the app sets app.current_user_id / app.is_admin per connection)
 CREATE OR REPLACE FUNCTION get_session_user_id()
@@ -68,6 +98,8 @@ COMMENT ON FUNCTION is_admin() IS 'Set with: SET app.is_admin = true';
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE passkeys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_codes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recovery_codes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
 
 -- 4) users policies
 DROP POLICY IF EXISTS users_select_policy ON users;
@@ -115,5 +147,16 @@ CREATE POLICY passkeys_admin_policy ON passkeys
 -- 6) email_codes: only the server (admin mode) can touch one-time codes
 DROP POLICY IF EXISTS email_codes_admin_policy ON email_codes;
 CREATE POLICY email_codes_admin_policy ON email_codes
+    FOR ALL
+    USING (is_admin());
+
+-- 7) recovery_codes and user_sessions: server (admin mode) only
+DROP POLICY IF EXISTS recovery_codes_admin_policy ON recovery_codes;
+CREATE POLICY recovery_codes_admin_policy ON recovery_codes
+    FOR ALL
+    USING (is_admin());
+
+DROP POLICY IF EXISTS user_sessions_admin_policy ON user_sessions;
+CREATE POLICY user_sessions_admin_policy ON user_sessions
     FOR ALL
     USING (is_admin());

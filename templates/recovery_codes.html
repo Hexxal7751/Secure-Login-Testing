@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Recovery codes - Secure Login Testing{% endblock %}
+{% block content %}
+<div class="auth">
+  <section class="card" data-tilt="4">
+    <div class="card-in stg">
+      <div class="hero-ic">{{ icon('key') }}</div>
+      <h1 data-split>Save your recovery codes</h1>
+      <p class="sub">If you lose your phone or passkey, each code lets you in once. They are shown only now, so store them somewhere safe.</p>
+      <code id="codes-text" class="codes">{% for c in codes %}{{ c }}
+{% endfor %}</code>
+      <button type="button" class="copy btn btn-ghost btn-block" data-copy="#codes-text">{{ icon('copy') }}<span>Copy all codes</span></button>
+      <ul class="facts">
+        <li>{{ icon('alert') }}<span>Each code works once. A code replaces either your authenticator code or your passkey at sign-in.</span></li>
+        <li>{{ icon('lock') }}<span>Anyone with a code and your password can use it, so don’t share or screenshot them carelessly.</span></li>
+      </ul>
+      <a class="btn btn-primary btn-block" href="{{ continue_url }}">{{ icon('check') }}<span>{% if first_time %}I saved them, continue{% else %}I saved them, done{% endif %}</span></a>
+    </div>
+  </section>
+</div>
+{% endblock %}

@@ -6,6 +6,8 @@ import base64
 import hashlib
 import secrets
 import logging
+import threading
+import ipaddress
 import traceback
 import urllib.error
 import urllib.parse
@@ -22,7 +24,7 @@ from psycopg2 import errors as pg_errors
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from flask import (
-    Flask, request, render_template, redirect, url_for, session, flash,
+    Flask, abort, request, render_template, redirect, url_for, session, flash,
     make_response, jsonify, g, has_request_context,
 )
 from werkzeug.exceptions import HTTPException
@@ -105,6 +107,8 @@ EMAIL_CODE_MAX_ATTEMPTS = 5
 DEL_TTL = timedelta(minutes=10)
 PENDING_GOOGLE_TTL = timedelta(minutes=15)
 RESET_TTL = timedelta(minutes=15)
+ACT_TTL = timedelta(minutes=10)
+SESSION_IDLE = timedelta(minutes=30)
 
 def check_config():
     """Log obvious configuration mistakes at startup (values are never printed)."""
@@ -142,6 +146,7 @@ TOTP_REGEX = re.compile(r"^\d{6}$")
 # Password-reset codes: 8 letters/digits, no look-alikes (no I, O, 0, 1)
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 RESET_CODE_REGEX = re.compile(r"^[A-HJ-NP-Z2-9]{8}$")
+RECOVERY_REGEX = re.compile(r"^[A-HJ-NP-Z2-9]{10}$")
 
 # Used so unknown users / Google-only users cost the same time as a real check
 DUMMY_HASH = bcrypt.hashpw(b"not-a-real-password", bcrypt.gensalt()).decode("utf-8")
@@ -305,6 +310,21 @@ def db_run(sql, params=(), fetch=None, user_id=None, admin=False):
         reset_connection_context(conn)
 
 
+def db_batch(statements, admin=True, user_id=None):
+    """Run several (sql, params) statements in ONE transaction."""
+    conn = get_admin_connection() if admin else get_db_connection(user_id)
+    try:
+        cur = conn.cursor()
+        for sql, params in statements:
+            cur.execute(sql, params)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        reset_connection_context(conn)
+
+
 def create_users_table():
     """Create tables and add any missing columns. Safe to run every start."""
     conn = get_admin_connection()
@@ -350,6 +370,32 @@ def create_users_table():
                 created_at TIMESTAMP NOT NULL
             )""",
             "CREATE INDEX IF NOT EXISTS email_codes_user_idx ON email_codes (user_id, purpose)",
+            "ALTER TABLE passkeys ADD COLUMN IF NOT EXISTS name TEXT",
+            "ALTER TABLE passkeys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP",
+            """CREATE TABLE IF NOT EXISTS recovery_codes (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                code_hash TEXT NOT NULL,
+                used BOOLEAN DEFAULT FALSE,
+                used_at TIMESTAMP,
+                created_at TIMESTAMP NOT NULL
+            )""",
+            "CREATE INDEX IF NOT EXISTS recovery_codes_user_idx ON recovery_codes (user_id)",
+            """CREATE TABLE IF NOT EXISTS user_sessions (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                created_at TIMESTAMP NOT NULL,
+                last_seen TIMESTAMP NOT NULL,
+                ip TEXT,
+                user_agent TEXT,
+                device TEXT,
+                location TEXT,
+                method VARCHAR(12),
+                completed BOOLEAN DEFAULT FALSE,
+                revoked BOOLEAN DEFAULT FALSE,
+                ended_at TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS user_sessions_user_idx ON user_sessions (user_id, created_at)",
         ]
         for sql in statements:
             try:
@@ -398,20 +444,20 @@ def get_user_by_verified_email(email):
 
 
 def get_user_passkeys(user_id):
-    return db_run("SELECT * FROM passkeys WHERE user_id = %s", (user_id,), fetch="all", user_id=user_id)
+    return db_run("SELECT * FROM passkeys WHERE user_id = %s ORDER BY id", (user_id,), fetch="all", user_id=user_id)
 
 
-def save_passkey(user_id, credential_id, public_key):
+def save_passkey(user_id, credential_id, public_key, name=None):
     db_run(
-        "INSERT INTO passkeys (user_id, credential_id, public_key) VALUES (%s, %s, %s)",
-        (user_id, credential_id, public_key), user_id=user_id,
+        "INSERT INTO passkeys (user_id, credential_id, public_key, name) VALUES (%s, %s, %s, %s)",
+        (user_id, credential_id, public_key, name), user_id=user_id,
     )
 
 
 def update_passkey_sign_count(credential_id, sign_count, user_id):
     db_run(
-        "UPDATE passkeys SET sign_count = %s WHERE credential_id = %s",
-        (sign_count, credential_id), user_id=user_id,
+        "UPDATE passkeys SET sign_count = %s, last_used_at = %s WHERE credential_id = %s",
+        (sign_count, utcnow(), credential_id), user_id=user_id,
     )
 
 
@@ -424,18 +470,13 @@ def get_passkey_by_credential_id(credential_id, user_id):
 
 def delete_user_everything(user_id):
     """Remove the account and everything attached to it in one transaction."""
-    conn = get_admin_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM email_codes WHERE user_id = %s", (user_id,))
-        cur.execute("DELETE FROM passkeys WHERE user_id = %s", (user_id,))
-        cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        reset_connection_context(conn)
+    db_batch([
+        ("DELETE FROM email_codes WHERE user_id = %s", (user_id,)),
+        ("DELETE FROM recovery_codes WHERE user_id = %s", (user_id,)),
+        ("DELETE FROM user_sessions WHERE user_id = %s", (user_id,)),
+        ("DELETE FROM passkeys WHERE user_id = %s", (user_id,)),
+        ("DELETE FROM users WHERE id = %s", (user_id,)),
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -526,28 +567,20 @@ def issue_email_code(user_id, purpose, email):
     else:
         code = f"{secrets.randbelow(1000000):06d}"
         shown = code
-    conn = get_admin_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE email_codes SET used = TRUE WHERE user_id = %s AND purpose = %s AND used = FALSE",
-            (user_id, purpose),
-        )
-        cur.execute(
-            """INSERT INTO email_codes (user_id, purpose, email, code_hash, expires_at, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s)""",
-            (user_id, purpose, email, _code_hash(user_id, purpose, code), now + EMAIL_CODE_TTL, now),
-        )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        reset_connection_context(conn)
+    db_batch([
+        ("UPDATE email_codes SET used = TRUE WHERE user_id = %s AND purpose = %s AND used = FALSE",
+         (user_id, purpose)),
+        ("INSERT INTO email_codes (user_id, purpose, email, code_hash, expires_at, created_at) "
+         "VALUES (%s, %s, %s, %s, %s, %s)",
+         (user_id, purpose, email, _code_hash(user_id, purpose, code), now + EMAIL_CODE_TTL, now)),
+    ])
 
     what = {"register": "finish creating your account",
             "delete": "delete your account",
-            "reset": "reset your password"}.get(purpose, "continue")
+            "reset": "reset your password",
+            "chgpw": "change your password",
+            "chgemail_old": "change your email address",
+            "chgemail_new": "confirm your new email address"}.get(purpose, "continue")
     ok = send_email(
         email,
         f"Your Secure Login Testing code: {shown}",
@@ -585,14 +618,207 @@ def check_email_code(user_id, purpose, code):
 # ---------------------------------------------------------------------------
 # Auth flow helpers
 # ---------------------------------------------------------------------------
-def start_login_session(user):
+def client_ip():
+    """Best-effort visitor IP behind Render's proxy (for display and alerts only)."""
+    ip = (request.headers.get("CF-Connecting-IP")
+          or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+          or request.remote_addr or "")
+    return ip[:64]
+
+
+def device_label(ua):
+    """Turn a User-Agent string into something like 'Chrome on Android'."""
+    ua = ua or ""
+    if "Edg/" in ua or "EdgA/" in ua:
+        browser = "Edge"
+    elif "OPR/" in ua or "Opera" in ua:
+        browser = "Opera"
+    elif "SamsungBrowser" in ua:
+        browser = "Samsung Internet"
+    elif "Firefox/" in ua or "FxiOS" in ua:
+        browser = "Firefox"
+    elif "Chrome/" in ua or "CriOS" in ua:
+        browser = "Chrome"
+    elif "Safari/" in ua:
+        browser = "Safari"
+    else:
+        browser = "Browser"
+    if "Android" in ua:
+        system = "Android"
+    elif "iPhone" in ua or "iPad" in ua or "iPod" in ua:
+        system = "iOS"
+    elif "Windows" in ua:
+        system = "Windows"
+    elif "CrOS" in ua:
+        system = "ChromeOS"
+    elif "Mac OS X" in ua or "Macintosh" in ua:
+        system = "macOS"
+    elif "Linux" in ua:
+        system = "Linux"
+    else:
+        system = ""
+    return f"{browser} on {system}" if system else browser
+
+
+def geo_lookup(ip):
+    """Rough 'City, Country' for an IP via ipwho.is. Set GEOIP=off to disable."""
+    if os.getenv("GEOIP", "on").strip().lower() in ("off", "0", "false", "no"):
+        return None
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if addr.is_private or addr.is_loopback or addr.is_reserved:
+        return "Local network"
+    try:
+        url = f"https://ipwho.is/{urllib.parse.quote(ip, safe=':')}?fields=success,city,country"
+        req = urllib.request.Request(url, headers={"User-Agent": HTTP_UA})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("success") is False:
+            return None
+        return ", ".join(p for p in (data.get("city"), data.get("country")) if p) or None
+    except Exception:
+        return None
+
+
+def run_async(fn):
+    """Run a slow, non-essential job (alert email, geo lookup) without blocking the request."""
+    threading.Thread(target=fn, daemon=True).start()
+
+
+def _fill_location(sid, ip):
+    try:
+        place = geo_lookup(ip)
+        if place:
+            db_run("UPDATE user_sessions SET location = %s WHERE id = %s", (place, sid), admin=True)
+    except Exception:
+        app.logger.exception("location update failed")
+
+
+def create_session_row(user_id, method):
+    sid = secrets.token_urlsafe(32)
+    now = utcnow()
+    ip = client_ip()
+    ua = (request.headers.get("User-Agent") or "")[:300]
+    db_run(
+        "INSERT INTO user_sessions (id, user_id, created_at, last_seen, ip, user_agent, device, method) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (sid, user_id, now, now, ip, ua, device_label(ua), method), admin=True,
+    )
+    try:
+        db_run("DELETE FROM user_sessions WHERE user_id = %s AND created_at < %s",
+               (user_id, now - timedelta(days=90)), admin=True)
+    except Exception:
+        app.logger.exception("session history cleanup failed")
+    run_async(lambda: _fill_location(sid, ip))
+    return sid
+
+
+def touch_session(sid, user_id):
+    """True if this session is still valid on the server (not signed out remotely)."""
+    row = db_run("SELECT revoked, last_seen FROM user_sessions WHERE id = %s AND user_id = %s",
+                 (sid, user_id), fetch="one", admin=True)
+    if not row or row["revoked"]:
+        return False
+    now = utcnow()
+    if (now - row["last_seen"]).total_seconds() > 60:
+        db_run("UPDATE user_sessions SET last_seen = %s WHERE id = %s", (now, sid), admin=True)
+    return True
+
+
+def end_session(sid):
+    if sid:
+        try:
+            db_run("UPDATE user_sessions SET revoked = TRUE, ended_at = %s WHERE id = %s AND revoked = FALSE",
+                   (utcnow(), sid), admin=True)
+        except Exception:
+            app.logger.exception("could not end session")
+
+
+def revoke_other_sessions(user_id, keep_sid=None):
+    """Sign out every session of this user except keep_sid. Returns how many were active."""
+    rows = db_run(
+        "UPDATE user_sessions SET revoked = TRUE, ended_at = %s "
+        "WHERE user_id = %s AND revoked = FALSE AND id <> %s RETURNING id",
+        (utcnow(), user_id, keep_sid or ""), fetch="all", admin=True,
+    )
+    return len(rows or [])
+
+
+def send_alert(email, subject, what):
+    """Fire-and-forget security email. Never blocks and never raises."""
+    if not email:
+        return
+    details = ""
+    if has_request_context():
+        details = f"Device: {device_label(request.headers.get('User-Agent'))}\nIP address: {client_ip()}\n"
+    body = (f"{what}\n\nWhen (UTC): {utcnow().strftime('%Y-%m-%d %H:%M')}\n{details}\n"
+            "If this was you, no action is needed.\n"
+            "If it wasn't, reset your password and review your passkeys and signed-in devices right away.")
+
+    def _go():
+        try:
+            send_email(email, f"Security alert: {subject}", body)
+        except Exception:
+            app.logger.exception("security alert failed")
+    run_async(_go)
+
+
+# ----- recovery codes ------------------------------------------------------
+def _norm_code(code):
+    return re.sub(r"[^A-Z0-9]", "", (code or "").upper())
+
+
+def _recovery_hash(user_id, raw):
+    key = (app.secret_key or "").encode("utf-8")
+    return hmac.new(key, f"{user_id}:recovery:{raw}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def generate_recovery_codes(user_id, count=8):
+    """Replace all recovery codes with new ones. Returns the plain codes (shown once)."""
+    now = utcnow()
+    codes, stmts = [], [("DELETE FROM recovery_codes WHERE user_id = %s", (user_id,))]
+    for _ in range(count):
+        raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(10))
+        codes.append(f"{raw[:5]}-{raw[5:]}")
+        stmts.append(("INSERT INTO recovery_codes (user_id, code_hash, created_at) VALUES (%s, %s, %s)",
+                      (user_id, _recovery_hash(user_id, raw), now)))
+    db_batch(stmts)
+    return codes
+
+
+def count_recovery_codes(user_id):
+    row = db_run("SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id = %s AND used = FALSE",
+                 (user_id,), fetch="one", admin=True)
+    return int(row["n"]) if row else 0
+
+
+def consume_recovery_code(user_id, code):
+    raw = _norm_code(code)
+    if not RECOVERY_REGEX.match(raw):
+        return False
+    row = db_run(
+        "UPDATE recovery_codes SET used = TRUE, used_at = %s WHERE id = ("
+        "SELECT id FROM recovery_codes WHERE user_id = %s AND code_hash = %s AND used = FALSE LIMIT 1) "
+        "RETURNING id",
+        (utcnow(), user_id, _recovery_hash(user_id, raw)), fetch="one", admin=True,
+    )
+    return bool(row)
+
+
+def start_login_session(user, method="password"):
     """Fresh session for a user who just proved their first factor."""
+    keep_link = session.get("pending_link")
     session.clear()
     session.permanent = True
     session["user_id"] = user["id"]
     session["username"] = user["username"]
     session["logged_in"] = True
     session["last_activity"] = utcnow().isoformat()
+    if keep_link:
+        session["pending_link"] = keep_link
+    session["sid"] = create_session_row(user["id"], method)
     try:
         db_run(
             "UPDATE users SET failed_login_attempts = 0, account_locked_until = NULL, "
@@ -601,6 +827,46 @@ def start_login_session(user):
         )
     except Exception:
         app.logger.exception("Could not update last_login")
+
+
+def session_ok():
+    """True if the cookie session is still valid on the server (not revoked)."""
+    sid, uid = session.get("sid"), session.get("user_id")
+    return bool(sid and uid and touch_session(sid, uid))
+
+
+def link_pending_google(user):
+    """Finish a 'link Google to my existing account' request after a full sign-in."""
+    pl = session.pop("pending_link", None)
+    if not pl:
+        return
+    try:
+        fresh = utcnow() - datetime.fromisoformat(pl["t"]) < PENDING_GOOGLE_TTL
+    except Exception:
+        fresh = False
+    if (not fresh or pl.get("uid") != user["id"] or user.get("google_sub")
+            or (user.get("email") or "").lower() != pl.get("email")
+            or get_user_by_google_sub(pl["sub"])):
+        return
+    try:
+        db_run("UPDATE users SET google_sub = %s WHERE id = %s", (pl["sub"], user["id"]), admin=True)
+    except pg_errors.UniqueViolation:
+        return
+    flash("Google account linked. You can now sign in with Google too.", "success")
+    send_alert(user.get("email"), "Google account linked", "A Google account was linked to your account.")
+    log_event("google_linked", {"user_id": user["id"]}, "WARNING")
+
+
+def finish_signin(user):
+    """Called once the last factor (passkey or recovery code) is accepted."""
+    session["passkey_verified"] = True
+    session["last_activity"] = utcnow().isoformat()
+    try:
+        db_run("UPDATE user_sessions SET completed = TRUE WHERE id = %s", (session.get("sid"),), admin=True)
+        db_run("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s", (user["id"],), admin=True)
+    except Exception:
+        app.logger.exception("could not finish sign-in bookkeeping")
+    link_pending_google(user)
 
 
 def next_step(user):
@@ -635,6 +901,12 @@ def login_required(f):
             except ValueError:
                 session.clear()
                 return redirect(url_for("login"))
+
+        sid = session.get("sid")
+        if not sid or not touch_session(sid, session["user_id"]):
+            session.clear()
+            flash("You were signed out. Please sign in again.", "warning")
+            return redirect(url_for("login"))
 
         session["last_activity"] = utcnow().isoformat()
         return f(*args, **kwargs)
@@ -712,7 +984,7 @@ def login():
                 stored = user.get("password") if user else None
                 matches = bcrypt.checkpw(password, (stored or DUMMY_HASH).encode("utf-8"))
                 if user and stored and matches:
-                    start_login_session(user)
+                    start_login_session(user, "password")
                     log_event("login_success", {"user_id": user["id"], "method": "password"})
                     return redirect(url_for(next_step(user)))
 
@@ -784,7 +1056,7 @@ def register():
                         error = "Username already taken!"
                     if row:
                         log_event("user_registration", {"user_id": row["id"], "method": "password"})
-                        start_login_session({"id": row["id"], "username": username})
+                        start_login_session({"id": row["id"], "username": username}, "password")
                         ok, msg = issue_email_code(row["id"], "register", email)
                         if not ok:
                             flash(msg, "error")
@@ -881,9 +1153,9 @@ def google_start():
         return redirect(url_for("login"))
 
     intent = request.args.get("intent", "login")
-    if intent not in ("login", "delete"):
+    if intent not in ("login", "delete", "link"):
         intent = "login"
-    if intent == "delete" and not (session.get("logged_in") and "passkey_verified" in session):
+    if intent in ("delete", "link") and not (session.get("logged_in") and "passkey_verified" in session):
         return redirect(url_for("login"))
 
     state = secrets.token_urlsafe(32)
@@ -910,7 +1182,7 @@ def google_callback():
     intent = session.pop("g_intent", "login")
     state = session.pop("g_state", None)
     nonce = session.pop("g_nonce", None)
-    back = url_for("delete_account") if intent == "delete" else url_for("login")
+    back = {"delete": url_for("delete_account"), "link": url_for("account")}.get(intent, url_for("login"))
 
     if request.args.get("error"):
         flash("Google sign-in was cancelled.", "warning")
@@ -968,15 +1240,46 @@ def google_callback():
             save_del_flow(flow)
         return redirect(url_for("delete_account"))
 
+    # --- Link Google to the account that is signed in right now ----------------
+    if intent == "link":
+        user = get_user_by_id(session["user_id"]) if (session.get("user_id") and "passkey_verified" in session) else None
+        if not user or not session_ok():
+            return redirect(url_for("login"))
+        if user.get("google_sub"):
+            flash("A Google account is already linked.", "warning")
+            return redirect(url_for("account"))
+        if get_user_by_google_sub(sub):
+            flash("That Google account is already linked to another account.", "error")
+            return redirect(url_for("account"))
+        try:
+            db_run("UPDATE users SET google_sub = %s WHERE id = %s", (sub, user["id"]), admin=True)
+        except pg_errors.UniqueViolation:
+            flash("That Google account is already linked to another account.", "error")
+            return redirect(url_for("account"))
+        send_alert(user.get("email"), "Google account linked", "A Google account was linked to your account.")
+        log_event("google_linked", {"user_id": user["id"]}, "WARNING")
+        flash("Google account linked.", "success")
+        return redirect(url_for("account"))
+
     # --- Sign in / sign up ---------------------------------------------------
     user = get_user_by_google_sub(sub)
     if user:
-        start_login_session(user)
+        start_login_session(user, "google")
         log_event("login_success", {"user_id": user["id"], "method": "google"})
         return redirect(url_for(next_step(user)))
 
-    if get_user_by_verified_email(email):
-        flash("An account with this email already exists. Sign in with your username and password.", "error")
+    existing = get_user_by_verified_email(email)
+    if existing:
+        if existing.get("google_sub"):
+            flash("That email belongs to an account linked to a different Google account.", "error")
+            return redirect(url_for("login"))
+        # Same verified email on both sides: offer to link, but only after the
+        # real account owner completes a FULL sign-in (password, TOTP, passkey).
+        session.clear()
+        session["pending_link"] = {"uid": existing["id"], "email": email, "sub": sub,
+                                   "t": utcnow().isoformat()}
+        flash("An account with this email already exists. Sign in with your username and "
+              "password to link your Google account to it.", "warning")
         return redirect(url_for("login"))
 
     session.clear()
@@ -1028,7 +1331,7 @@ def register_google():
                     error = "Username already taken, or this Google account is already registered."
                 if row:
                     log_event("user_registration", {"user_id": row["id"], "method": "google"})
-                    start_login_session({"id": row["id"], "username": username})
+                    start_login_session({"id": row["id"], "username": username}, "google")
                     return redirect(url_for("setup_totp"))
 
     return render_template("choose_username.html", error=error, masked_email=mask_email(pending["email"]),
@@ -1136,13 +1439,22 @@ def passkey_register_complete():
             expected_origin=ORIGIN,
             expected_challenge=base64url_to_bytes(session.pop("passkey_challenge", "") or ""),
         )
+        adding_more = "passkey_verified" in session
+        name = device_label(request.headers.get("User-Agent"))
         save_passkey(
             user_id=session["user_id"],
             credential_id=bytes_to_base64url(verification.credential_id),
             public_key=bytes_to_base64url(verification.credential_public_key),
+            name=name,
         )
         db_run("UPDATE users SET passkey_enabled = TRUE WHERE id = %s", (session["user_id"],), admin=True)
         session.pop("passkey_user_id", None)
+        if adding_more:
+            user = get_user_by_id(session["user_id"])
+            send_alert(user.get("email") if user else None, "New passkey added",
+                       f"A new passkey ({name}) was added to your account.")
+            log_event("passkey_added", {"user_id": session["user_id"]}, "WARNING")
+            flash("Passkey added.", "success")
         return jsonify({"success": True})
     except Exception:
         logging.error("Error in passkey_register_complete")
@@ -1201,9 +1513,7 @@ def passkey_authenticate_complete():
         verification = _verify_assertion(data, passkey, session.pop("passkey_challenge", ""))
         update_passkey_sign_count(data["id"], verification.new_sign_count, user_id)
 
-        session["passkey_verified"] = True
-        session["last_activity"] = utcnow().isoformat()
-        db_run("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s", (user_id,), admin=True)
+        finish_signin(get_user_by_id(user_id))
         return jsonify({"redirect": url_for("dashboard")})
     except Exception:
         logging.error("Error in passkey_authenticate_complete")
@@ -1257,7 +1567,10 @@ def setup_totp():
             session.pop("temp_qr_code", None)
             session.pop("temp_secret", None)
             session["2fa_verified"] = True
-            return redirect(url_for("setup_passkey_page"))
+            codes = generate_recovery_codes(session["user_id"])
+            return render_template("recovery_codes.html", codes=codes, first_time=True,
+                                   continue_url=url_for("setup_passkey_page"),
+                                   csrf_token=generate_csrf_token())
         return page("Invalid code. Please try again.")
 
     secret = pyotp.random_base32()
@@ -1512,6 +1825,8 @@ def delete_account():
                 elif request.form.get("confirm_text", "").strip() != phrase:
                     error = "That didn't match. Type the phrase exactly as shown."
                 else:
+                    send_alert(user.get("email"), "Account deleted",
+                               f"The account \"{user['username']}\" was permanently deleted.")
                     delete_user_everything(user["id"])
                     log_event("account_deleted", {"user_id": user["id"]}, "WARNING")
                     session.clear()
@@ -1699,6 +2014,9 @@ def reset_password():
                         (hashed, user["id"]), admin=True,
                     )
                     log_event("password_reset_done", {"user_id": user["id"]}, "WARNING")
+                    revoke_other_sessions(user["id"])
+                    send_alert(user.get("email"), "Password reset",
+                               "Your password was reset with an emailed code. All devices were signed out.")
                     session.clear()
                     flash("Password updated. Sign in with your new password.", "success")
                     return redirect(url_for("login"))
@@ -1709,96 +2027,400 @@ def reset_password():
 
 
 # ---------------------------------------------------------------------------
-# Logout
+# Account hub: overview, signed-in devices, recovery codes, Google linking
 # ---------------------------------------------------------------------------
-def _logout_response():
-    session.clear()
-    response = make_response(redirect(url_for("login")))
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-    return response
+def acct_user():
+    user = get_user_by_id(session["user_id"])
+    if not user:
+        session.clear()
+    return user
 
 
-@app.route("/logout")
-def logout():
-    return _logout_response()
-
-
-@app.route("/emergency-logout")
-def emergency_logout():
-    """Hidden emergency logout route for use during authentication process"""
-    return _logout_response()
-
-
-# ---------------------------------------------------------------------------
-# Error pages
-# One handler renders every error (400, 403, 404, 405, 429, 500, ...) with
-# templates/error.html. Fetch/JSON callers get JSON instead of HTML.
-# Messages are fixed strings so internal details never leak to the browser.
-# ---------------------------------------------------------------------------
-ERROR_PAGES = {
-    400: ("Bad request", "That request didn't look right. Go back and try again.", "alert", "warn"),
-    401: ("Sign in required", "Please sign in to continue.", "lock", "warn"),
-    403: ("Access denied", "You don't have permission to view this page.", "lock", "warn"),
-    404: ("Page not found", "The page you're looking for doesn't exist or has moved.", "compass", "info"),
-    405: ("Action not allowed", "That action isn't supported on this page.", "alert", "warn"),
-    408: ("Request timed out", "The request took too long. Please try again.", "clock", "warn"),
-    413: ("Request too large", "What you sent was too large to process.", "alert", "warn"),
-    429: ("Slow down a little", "Too many requests. Wait a minute, then try again.", "clock", "warn"),
-    500: ("Server error", "Something went wrong on our end. Please try again shortly.", "server", "danger"),
-    502: ("Bad gateway", "The server is waking up or unreachable. Try again in a moment.", "server", "danger"),
-    503: ("Service unavailable", "We're temporarily unavailable. Please try again shortly.", "server", "danger"),
-    504: ("Gateway timeout", "The server took too long to respond. Try again in a moment.", "server", "danger"),
-}
-
-JSON_PREFIXES = ("/passkey/", "/account/delete/passkey/", "/check-username")
-
-
-def _wants_json():
-    return request.is_json or request.path.startswith(JSON_PREFIXES)
-
-
-def render_error(code, extra_headers=None):
-    title, message, icon, tone = ERROR_PAGES.get(
-        code,
-        ("Something went wrong", "An unexpected error occurred. Please try again.", "alert",
-         "danger" if code >= 500 else "warn"),
+@app.route("/account")
+@login_required
+@two_factor_required
+@passkey_verified_required
+def account():
+    user = acct_user()
+    if not user:
+        return redirect(url_for("login"))
+    now = utcnow()
+    rows = db_run(
+        "SELECT * FROM user_sessions WHERE user_id = %s AND completed = TRUE "
+        "ORDER BY created_at DESC LIMIT 15", (user["id"],), fetch="all", admin=True) or []
+    current = session.get("sid")
+    sessions = [{
+        "id": r["id"],
+        "device": r["device"] or "Unknown device",
+        "ip": r["ip"] or "",
+        "location": r["location"] or "",
+        "method": r["method"] or "",
+        "created": r["created_at"],
+        "last_seen": r["last_seen"],
+        "active": (not r["revoked"]) and (now - r["last_seen"] < SESSION_IDLE),
+        "current": r["id"] == current,
+    } for r in rows]
+    passkeys = get_user_passkeys(user["id"])
+    return render_template(
+        "account.html",
+        username=user["username"],
+        masked_email=mask_email(user.get("email")),
+        has_password=bool(user.get("password")),
+        google_linked=bool(user.get("google_sub")),
+        google_only=(user.get("auth_provider") == "google" and not user.get("password")),
+        passkey_count=len(passkeys),
+        recovery_left=count_recovery_codes(user["id"]),
+        sessions=sessions,
+        other_active=sum(1 for x in sessions if x["active"] and not x["current"]),
+        csrf_token=generate_csrf_token(),
     )
-    try:
-        if _wants_json():
-            response = make_response(jsonify({"error": message}), code)
+
+
+@app.route("/account/sessions/revoke", methods=["POST"])
+@login_required
+@two_factor_required
+@passkey_verified_required
+def session_revoke():
+    if not validate_csrf_token():
+        flash("Invalid request. Please try again.", "error")
+        return redirect(url_for("account"))
+    sid = request.form.get("sid", "")
+    if sid == session.get("sid"):
+        flash("Use Sign out to end this device's session.", "warning")
+    else:
+        db_run("UPDATE user_sessions SET revoked = TRUE, ended_at = %s "
+               "WHERE id = %s AND user_id = %s AND revoked = FALSE",
+               (utcnow(), sid, session["user_id"]), admin=True)
+        flash("That device was signed out.", "success")
+    return redirect(url_for("account"))
+
+
+@app.route("/account/sessions/revoke-others", methods=["POST"])
+@login_required
+@two_factor_required
+@passkey_verified_required
+def sessions_signout_others():
+    if not validate_csrf_token():
+        flash("Invalid request. Please try again.", "error")
+        return redirect(url_for("account"))
+    user = acct_user()
+    if not user:
+        return redirect(url_for("login"))
+    count = revoke_other_sessions(user["id"], session.get("sid"))
+    if count:
+        send_alert(user.get("email"), "Signed out of other devices",
+                   f"{count} other device(s) were signed out of your account.")
+    log_event("sessions_revoked", {"user_id": user["id"], "count": count}, "WARNING")
+    flash(f"Signed out {count} other device(s)." if count else "No other devices were signed in.", "success")
+    return redirect(url_for("account"))
+
+
+# ----- recovery codes ------------------------------------------------------
+@app.route("/account/recovery-codes", methods=["POST"])
+@login_required
+@two_factor_required
+@passkey_verified_required
+@limiter.limit("5 per minute", methods=["POST"])
+def regenerate_recovery_codes():
+    user = acct_user()
+    if not user:
+        return redirect(url_for("login"))
+    code = request.form.get("totp_code", "")
+    if not validate_csrf_token():
+        flash("Invalid request. Please try again.", "error")
+    elif not TOTP_REGEX.match(code) or not verify_totp(user["secret"], code):
+        flash("That authenticator code is incorrect.", "error")
+    else:
+        codes = generate_recovery_codes(user["id"])
+        send_alert(user.get("email"), "New recovery codes",
+                   "New recovery codes were generated. Your old codes no longer work.")
+        log_event("recovery_codes_regenerated", {"user_id": user["id"]}, "WARNING")
+        return render_template("recovery_codes.html", codes=codes, first_time=False,
+                               continue_url=url_for("account"), csrf_token=generate_csrf_token())
+    return redirect(url_for("account"))
+
+
+@app.route("/recovery/<kind>", methods=["GET", "POST"])
+@login_required
+@limiter.limit("10 per minute", methods=["POST"])
+def recovery_login(kind):
+    """Use a one-time recovery code instead of the authenticator app or the passkey."""
+    if kind not in ("totp", "passkey"):
+        abort(404)
+    user = acct_user()
+    if not user:
+        return redirect(url_for("login"))
+    if user.get("email") and not user.get("email_verified"):
+        return redirect(url_for("verify_email_page"))
+    if kind == "totp":
+        if "2fa_verified" in session or not user.get("secret"):
+            return redirect(url_for(next_step(user)))
+    elif "2fa_verified" not in session or "passkey_verified" in session or not get_user_passkeys(user["id"]):
+        return redirect(url_for(next_step(user)))
+
+    error = None
+    if request.method == "POST":
+        if not validate_csrf_token():
+            error = "Invalid request. Please try again."
+        elif consume_recovery_code(user["id"], request.form.get("code", "")):
+            left = count_recovery_codes(user["id"])
+            send_alert(user.get("email"), "Recovery code used",
+                       f"A recovery code was used to replace your {'authenticator code' if kind == 'totp' else 'passkey'}"
+                       f" at sign-in. {left} code(s) remain.")
+            log_event("recovery_code_used", {"user_id": user["id"], "for": kind}, "WARNING")
+            session.pop("rec_fails", None)
+            if kind == "totp":
+                session["2fa_verified"] = True
+                flash(f"Recovery code accepted. {left} left. Generate new codes soon.", "warning")
+                return redirect(url_for(next_step(user)))
+            finish_signin(user)
+            flash(f"Recovery code accepted. {left} left. Add a new passkey now.", "warning")
+            return redirect(url_for("manage_passkeys"))
         else:
-            response = make_response(
-                render_template("error.html", code=code, title=title, message=message, glyph=icon, tone=tone),
-                code,
-            )
-    except Exception:
-        # Never let the error page itself raise (that would loop)
-        app.logger.exception("Failed to render error page")
-        response = make_response(message, code)
-        response.headers["Content-Type"] = "text/plain; charset=utf-8"
-    for key, value in (extra_headers or []):
-        if key.lower() not in ("content-type", "content-length"):
-            response.headers[key] = value
-    return response
+            session["rec_fails"] = session.get("rec_fails", 0) + 1
+            error = "That recovery code isn't valid, or it was already used."
+            if session["rec_fails"] >= 5:
+                end_session(session.get("sid"))
+                session.clear()
+                flash("Too many wrong recovery codes. Please sign in again.", "error")
+                return redirect(url_for("login"))
+    return render_template("recovery_login.html", kind=kind, error=error, csrf_token=generate_csrf_token())
 
 
-@app.errorhandler(psycopg2.OperationalError)
-def handle_db_down(e):
-    app.logger.error("Database unavailable: %s", str(e).strip()[:300])
-    return render_error(503)
+# ----- manage passkeys -----------------------------------------------------
+@app.route("/account/passkeys")
+@login_required
+@two_factor_required
+@passkey_verified_required
+def manage_passkeys():
+    user = acct_user()
+    if not user:
+        return redirect(url_for("login"))
+    return render_template("passkeys.html", passkeys=get_user_passkeys(user["id"]),
+                           csrf_token=generate_csrf_token())
 
 
-@app.errorhandler(Exception)
-def handle_any_exception(e):
-    if isinstance(e, HTTPException):
-        # 404 / 405 / 429 (rate limiter) and friends
-        return render_error(e.code or 500, e.get_headers())
-    app.logger.exception("Unhandled exception")
-    return render_error(500)
+@app.route("/account/passkeys/rename", methods=["POST"])
+@login_required
+@two_factor_required
+@passkey_verified_required
+def passkey_rename():
+    name = re.sub(r"[\x00-\x1f\x7f]", "", request.form.get("name", "")).strip()[:40]
+    if not validate_csrf_token():
+        flash("Invalid request. Please try again.", "error")
+    elif not name:
+        flash("Enter a name for the passkey.", "error")
+    else:
+        db_run("UPDATE passkeys SET name = %s WHERE id = %s AND user_id = %s",
+               (name, request.form.get("id", type=int), session["user_id"]), user_id=session["user_id"])
+        flash("Passkey renamed.", "success")
+    return redirect(url_for("manage_passkeys"))
 
 
-if __name__ == "__main__":
-    debug_mode = os.getenv("FLASK_ENV") == "development"
-    app.run(host="0.0.0.0", port=10000, debug=debug_mode)
+@app.route("/account/passkeys/delete", methods=["POST"])
+@login_required
+@two_factor_required
+@passkey_verified_required
+def passkey_delete():
+    user = acct_user()
+    if not user:
+        return redirect(url_for("login"))
+    pk_id = request.form.get("id", type=int)
+    keys = get_user_passkeys(user["id"])
+    target = next((k for k in keys if k["id"] == pk_id), None)
+    if not validate_csrf_token():
+        flash("Invalid request. Please try again.", "error")
+    elif not target:
+        flash("That passkey wasn't found.", "error")
+    elif len(keys) <= 1:
+        flash("You can't remove your only passkey. Add another one first.", "error")
+    else:
+        db_run("DELETE FROM passkeys WHERE id = %s AND user_id = %s", (pk_id, user["id"]), user_id=user["id"])
+        send_alert(user.get("email"), "Passkey removed",
+                   f"The passkey \"{target.get('name') or 'Passkey'}\" was removed from your account.")
+        log_event("passkey_removed", {"user_id": user["id"]}, "WARNING")
+        flash("Passkey removed.", "success")
+    return redirect(url_for("manage_passkeys"))
+
+
+# ----- Google link / unlink ------------------------------------------------
+@app.route("/account/google/unlink", methods=["POST"])
+@login_required
+@two_factor_required
+@passkey_verified_required
+def google_unlink():
+    user = acct_user()
+    if not user:
+        return redirect(url_for("login"))
+    if not validate_csrf_token():
+        flash("Invalid request. Please try again.", "error")
+    elif not user.get("google_sub"):
+        flash("No Google account is linked.", "warning")
+    elif not user.get("password"):
+        flash("Google is your only way to sign in, so it can't be unlinked.", "error")
+    else:
+        db_run("UPDATE users SET google_sub = NULL WHERE id = %s", (user["id"],), admin=True)
+        send_alert(user.get("email"), "Google account unlinked", "The Google account was unlinked from your account.")
+        log_event("google_unlinked", {"user_id": user["id"]}, "WARNING")
+        flash("Google account unlinked.", "success")
+    return redirect(url_for("account"))
+
+
+# ----- change password / change email (both need an emailed code) ----------
+def get_act(kind, uid):
+    a = session.get("act")
+    if a and a.get("kind") == kind and a.get("uid") == uid:
+        try:
+            if utcnow() - datetime.fromisoformat(a["t"]) < ACT_TTL:
+                return a
+        except Exception:
+            pass
+    session.pop("act", None)
+    return None
+
+
+def save_act(a):
+    session["act"] = a
+    session.modified = True
+
+
+def start_act(kind, uid, stage):
+    a = {"kind": kind, "uid": uid, "t": utcnow().isoformat(), "stage": stage, "fails": 0, "new_email": None}
+    save_act(a)
+    return a
+
+
+def _act_abort(message):
+    session.pop("act", None)
+    flash(message, "error")
+    return redirect(url_for("account"))
+
+
+@app.route("/account/change-password", methods=["GET", "POST"])
+@login_required
+@two_factor_required
+@passkey_verified_required
+@limiter.limit("30 per hour", methods=["POST"])
+def change_password():
+    user = acct_user()
+    if not user:
+        return redirect(url_for("login"))
+    if not user.get("password") or not user.get("email") or not user.get("email_verified"):
+        flash("Changing the password needs an account with a password and a verified email.", "warning")
+        return redirect(url_for("account"))
+
+    a = get_act("pw", user["id"])
+    if a is None or (request.method == "GET" and request.args.get("restart")):
+        a = start_act("pw", user["id"], "send")
+    error = None
+
+    if request.method == "POST":
+        do = request.form.get("do")
+        if not validate_csrf_token():
+            error = "Invalid request. Please try again."
+        elif do == "send" and a["stage"] in ("send", "code"):
+            ok, msg = issue_email_code(user["id"], "chgpw", user["email"])
+            if ok:
+                a["stage"] = "code"
+                save_act(a)
+            flash("Code sent. Check your inbox." if ok else msg, "success" if ok else "error")
+            return redirect(url_for("change_password"))
+        elif do == "verify" and a["stage"] == "code":
+            code = request.form.get("totp_code", "")
+            if not TOTP_REGEX.match(code):
+                error = "Please enter a valid 6-digit code"
+            else:
+                ok, msg, sent_to = check_email_code(user["id"], "chgpw", code)
+                if ok and sent_to == user["email"]:
+                    a["stage"] = "form"
+                    save_act(a)
+                    return redirect(url_for("change_password"))
+                a["fails"] += 1
+                error = msg or "Incorrect code. Please try again."
+        elif do == "save" and a["stage"] == "form":
+            current = request.form.get("current", "").encode("utf-8")[:72]
+            new = request.form.get("password", "").encode("utf-8")
+            confirm = request.form.get("confirm", "").encode("utf-8")
+            if not bcrypt.checkpw(current, user["password"].encode("utf-8")):
+                a["fails"] += 1
+                error = "Your current password is incorrect."
+            elif len(new) < 8:
+                error = "Password must be at least 8 characters long!"
+            elif len(new) > 72:
+                error = "Password must be 72 bytes or fewer."
+            elif new != confirm:
+                error = "The two passwords don't match."
+            elif new == current:
+                error = "Choose a password you haven't used here before."
+            else:
+                hashed = bcrypt.hashpw(new, bcrypt.gensalt()).decode("utf-8")
+                db_run("UPDATE users SET password = %s WHERE id = %s", (hashed, user["id"]), admin=True)
+                revoke_other_sessions(user["id"], session.get("sid"))
+                send_alert(user["email"], "Password changed",
+                           "Your password was changed. Other devices were signed out.")
+                log_event("password_changed", {"user_id": user["id"]}, "WARNING")
+                session.pop("act", None)
+                flash("Password changed. Other devices were signed out.", "success")
+                return redirect(url_for("account"))
+        else:
+            error = "That step isn't available right now."
+        if a["fails"] >= 5:
+            return _act_abort("Too many wrong attempts. The password change was cancelled.")
+        save_act(a)
+
+    return render_template("change_password.html", stage=a["stage"], error=error,
+                           masked_email=mask_email(user["email"]), csrf_token=generate_csrf_token())
+
+
+@app.route("/account/change-email", methods=["GET", "POST"])
+@login_required
+@two_factor_required
+@passkey_verified_required
+@limiter.limit("30 per hour", methods=["POST"])
+def change_email():
+    user = acct_user()
+    if not user:
+        return redirect(url_for("login"))
+    if user.get("auth_provider") == "google" and not user.get("password"):
+        flash("Your email comes from your Google account, so it can't be changed here.", "warning")
+        return redirect(url_for("account"))
+
+    has_old = bool(user.get("email") and user.get("email_verified"))
+    a = get_act("email", user["id"])
+    if a is None or (request.method == "GET" and request.args.get("restart")):
+        a = start_act("email", user["id"], "send_old" if has_old else "new")
+    error = None
+
+    if request.method == "POST":
+        do = request.form.get("do")
+        if not validate_csrf_token():
+            error = "Invalid request. Please try again."
+        elif do == "send" and a["stage"] in ("send_old", "code_old") and has_old:
+            ok, msg = issue_email_code(user["id"], "chgemail_old", user["email"])
+            if ok:
+                a["stage"] = "code_old"
+                save_act(a)
+            flash("Code sent. Check your inbox." if ok else msg, "success" if ok else "error")
+            return redirect(url_for("change_email"))
+        elif do == "verify" and a["stage"] == "code_old":
+            code = request.form.get("totp_code", "")
+            if not TOTP_REGEX.match(code):
+                error = "Please enter a valid 6-digit code"
+            else:
+                ok, msg, sent_to = check_email_code(user["id"], "chgemail_old", code)
+                if ok and sent_to == user["email"]:
+                    a["stage"] = "new"
+                    save_act(a)
+                    return redirect(url_for("change_email"))
+                a["fails"] += 1
+                error = msg or "Incorrect code. Please try again."
+        elif do == "new" and a["stage"] == "new":
+            new_email = request.form.get("email", "").strip().lower()
+            other = get_user_by_verified_email(new_email) if validate_email(new_email) else None
+            if not validate_email(new_email) or len(new_email) > 254:
+                error = "Please enter a valid email address."
+            elif new_email == (user.get("email") or "").lower():
+                error = "That is already your email address."
+            elif other and other["id"] != user["id"]:
+                error = "That email is already in use."
+           

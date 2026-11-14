@@ -19,6 +19,23 @@ This document describes what the application actually implements, and what it do
 - Same code protections as below (HMAC-hashed, single use, 10-minute expiry, 5 attempts, resend limits); a successful reset also clears any lockout
 - Resetting the password does not bypass TOTP or the passkey: both are still required to sign in
 
+### Sessions, devices and alerts
+- Every sign-in creates a server-side session record (device, IP, approximate location, time). A session is only valid while that record isn't revoked, so "sign out" really ends it, including on other devices
+- Password reset, password change and email change sign out all other devices
+- Security alert emails go to the account's email for: password reset/change, email change (old and new address), new or removed passkey, recovery-code use or regeneration, Google linking/unlinking, signing out other devices, account deletion
+- Approximate locations come from a third-party IP lookup (ipwho.is); set `GEOIP=off` to disable it. The IP is read from proxy headers and is best-effort
+
+### Recovery codes
+- 8 random codes (10 characters from a no-look-alike alphabet), shown once and stored only as HMAC hashes; each works once
+- A code replaces one factor (authenticator or passkey) and is rate-limited; 5 wrong tries end the session
+- Regenerating codes needs a valid authenticator code and invalidates the old set
+
+### Account changes and linking
+- Changing the password needs an emailed code plus the current password
+- Changing the email needs a code sent to the old address and then to the new one
+- Passkeys can only be added or removed from a fully signed-in session; the last passkey can't be removed
+- Google can be linked from a fully signed-in session, or automatically after a full sign-in when the Google email matches the account's verified email; an existing link is never overwritten and Google can't be unlinked from a Google-only account
+
 ### 3. Account deletion
 - Requires a fully signed-in session, then re-verifies: password (or Google account), emailed code, TOTP code and a passkey (user verification required)
 - Finishes with a typed phrase and a confirmation dialog; the whole flow expires after 10 minutes and is cancelled after 5 wrong answers
@@ -56,6 +73,9 @@ The CSP allows only same-origin resources plus `cdn.jsdelivr.net`, Google Fonts 
 - Security events (login success/failure, registration, lockout, password reset, account deletion) go through `security_logging.py`
 
 ## Known limitations
+
+- Alert emails are sent in the background and are best-effort; they depend on your email provider's limits.
+- A recovery code is a standalone bypass of one factor: anyone who has your password and a recovery code gets past that factor. Store them like passwords.
 
 - Rate-limit counters live in memory: they reset on restart and are not shared across workers (use Redis for multi-worker setups).
 - Google's ID token is trusted without a signature check because it is received directly from Google over HTTPS with the client secret (as Google documents).

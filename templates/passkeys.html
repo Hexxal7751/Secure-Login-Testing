@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Passkeys - Secure Login Testing{% endblock %}
+{% block page %}dash{% endblock %}
+{% block header_actions %}
+<a class="btn btn-ghost btn-sm" href="{{ url_for('account') }}">{{ icon('back') }}<span>Account</span></a>
+{% endblock %}
+{% block content %}
+<div class="wrap">
+  <section class="card hero" data-tilt="2">
+    <div class="card-in stg">
+      <span class="badge"><i class="dot-live"></i>{{ passkeys|length }} passkey{{ '' if passkeys|length == 1 else 's' }}</span>
+      <h1 data-split>Your passkeys</h1>
+      <p class="sub">Add a passkey on each device you use. You must always keep at least one.</p>
+    </div>
+  </section>
+
+  <section class="tile">
+    <ul class="rows">
+      {% for p in passkeys %}
+      <li class="row">
+        <div class="row-main">
+          <b>{{ icon('fingerprint') }}{{ p.name or 'Passkey' }}</b>
+          <span class="row-sub">Added {{ p.created_at.strftime('%b %d, %Y') }} · {% if p.last_used_at %}last used {{ p.last_used_at.strftime('%b %d, %Y') }}{% else %}not used yet{% endif %}</span>
+        </div>
+        <form method="post" action="{{ url_for('passkey_rename') }}" class="inline-rename">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="id" value="{{ p.id }}">
+          <input class="mini" name="name" maxlength="40" value="{{ p.name or '' }}" placeholder="Name" aria-label="Passkey name">
+          <button type="submit" class="btn btn-ghost btn-sm">Rename</button>
+        </form>
+        <form method="post" action="{{ url_for('passkey_delete') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="id" value="{{ p.id }}">
+          <button type="submit" class="btn btn-danger btn-sm"{% if passkeys|length <= 1 %} disabled title="You can't remove your only passkey"{% endif %}>Remove</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section class="card" data-tilt="4">
+    <div class="card-in" data-passkey data-mode="register"
+         data-begin="{{ url_for('passkey_register_begin') }}"
+         data-complete="{{ url_for('passkey_register_complete') }}"
+         data-next="{{ url_for('manage_passkeys') }}">
+      <div class="stg">
+        <h2>Add another passkey</h2>
+        <p class="sub">Use this on a second phone, laptop or security key.</p>
+        <div class="orbwrap">
+          <div class="orb" data-state="idle">{{ icon('fingerprint', 'o-fp') }}{{ icon('check', 'o-ok') }}{{ icon('x', 'o-err') }}</div>
+          <p class="status" aria-live="polite">Ready when you are.</p>
+        </div>
+        <button type="button" class="btn btn-primary btn-block" data-pk-go>{{ icon('key') }}<span>Add passkey</span></button>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}

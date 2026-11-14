@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, field, google_logo %}
+{% block title %}Account & security - Secure Login Testing{% endblock %}
+{% block page %}dash{% endblock %}
+
+{% block header_actions %}
+<a class="btn btn-ghost btn-sm" href="{{ url_for('dashboard') }}">{{ icon('back') }}<span>Dashboard</span></a>
+{% endblock %}
+
+{% block content %}
+<div class="wrap">
+  <section class="card hero" data-tilt="2">
+    <div class="card-in stg">
+      <span class="badge"><i class="dot-live"></i>Account &amp; security</span>
+      <h1 data-split>{{ username }}</h1>
+      <div class="meta">
+        {% if masked_email %}<span class="meta-i">{{ icon('mail') }}{{ masked_email }}</span>{% endif %}
+        <span class="meta-i">{{ icon('shield-check') }}{{ 'Password' if has_password else 'Google' }}{{ ' + Google' if has_password and google_linked else '' }}</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid3">
+    <article class="tile reveal" data-tilt="7">
+      <h3>{{ icon('lock') }}Password</h3>
+      {% if has_password %}
+      <p class="sm">Change it with an emailed code. Other devices are signed out.</p>
+      <a class="btn btn-ghost btn-sm" href="{{ url_for('change_password', restart=1) }}">{{ icon('lock') }}<span>Change password</span></a>
+      {% else %}
+      <p class="sm">You sign in with Google, so there is no password to change.</p>
+      {% endif %}
+    </article>
+
+    <article class="tile reveal" data-tilt="7">
+      <h3>{{ icon('mail') }}Email</h3>
+      {% if google_only %}
+      <p class="sm">Your email comes from your Google account.</p>
+      {% else %}
+      <p class="sm">{{ masked_email or 'No email on file yet.' }} Changing it needs codes sent to the old and new address.</p>
+      <a class="btn btn-ghost btn-sm" href="{{ url_for('change_email', restart=1) }}">{{ icon('mail') }}<span>Change email</span></a>
+      {% endif %}
+    </article>
+
+    <article class="tile reveal" data-tilt="7">
+      <h3>{{ icon('fingerprint') }}Passkeys</h3>
+      <div class="big"><span>{{ passkey_count }}</span><small> registered</small></div>
+      <a class="btn btn-ghost btn-sm" href="{{ url_for('manage_passkeys') }}">{{ icon('key') }}<span>Manage passkeys</span></a>
+    </article>
+
+    <article class="tile reveal" data-tilt="7">
+      <h3>{{ icon('key') }}Recovery codes</h3>
+      <div class="big"><span>{{ recovery_left }}</span><small> unused</small></div>
+      <p class="sm">{% if recovery_left == 0 %}You have none left. Generate a new set now.{% else %}One-time codes for a lost phone or passkey.{% endif %}</p>
+      <form method="post" action="{{ url_for('regenerate_recovery_codes') }}" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {{ field('regen_code', 'totp_code', 'Authenticator code', 'text', 'phone', 'one-time-code', 'inputmode="numeric" maxlength="6" pattern="[0-9]*"') }}
+        <button type="submit" class="btn btn-ghost btn-sm">{{ icon('key') }}<span>{{ 'Generate new codes' if recovery_left else 'Generate codes' }}</span></button>
+      </form>
+      <p class="sm">Generating new codes cancels the old ones.</p>
+    </article>
+
+    <article class="tile reveal" data-tilt="7">
+      <h3>{{ icon('user-plus') }}Google sign-in</h3>
+      {% if google_linked %}
+      <p class="sm">A Google account is linked. You can sign in with it.</p>
+      {% if has_password %}
+      <form method="post" action="{{ url_for('google_unlink') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-ghost btn-sm">{{ icon('ban') }}<span>Unlink Google</span></button>
+      </form>
+      {% endif %}
+      {% else %}
+      <p class="sm">Link a Google account to sign in with it too.</p>
+      <a class="btn btn-google btn-sm" href="{{ url_for('google_start', intent='link') }}">{{ google_logo() }}<span>Link Google</span></a>
+      {% endif %}
+    </article>
+  </section>
+
+  <h2 class="sec-h reveal">Signed-in devices &amp; history</h2>
+  <section class="tile reveal">
+    {% if sessions %}
+    <ul class="rows">
+      {% for s in sessions %}
+      <li class="row">
+        <div class="row-main">
+          <b>{{ s.device }}
+            {% if s.current %}<span class="pill live">This device</span>{% elif s.active %}<span class="pill">Active</span>{% else %}<span class="pill off">Signed out</span>{% endif %}
+          </b>
+          <span class="row-sub">{% if s.location %}{{ s.location }} · {% endif %}{{ s.ip }} · via {{ s.method }}</span>
+          <span class="row-sub">Signed in {{ s.created.strftime('%b %d, %H:%M') }} UTC · last seen {{ s.last_seen.strftime('%b %d, %H:%M') }} UTC</span>
+        </div>
+        {% if s.active and not s.current %}
+        <form method="post" action="{{ url_for('session_revoke') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="sid" value="{{ s.id }}">
+          <button type="submit" class="btn btn-ghost btn-sm">Sign out</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="sm">No sign-ins recorded yet.</p>
+    {% endif %}
+    {% if other_active %}
+    <form method="post" action="{{ url_for('sessions_signout_others') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-danger btn-sm">{{ icon('logout') }}<span>Sign out all other devices ({{ other_active }})</span></button>
+    </form>
+    {% endif %}
+    <p class="sm">Locations are approximate and based on the IP address. History is kept for 90 days.</p>
+  </section>
+
+  <section class="tile reveal">
+    <h3>{{ icon('ban') }}Danger zone</h3>
+    <p class="sm">Permanently delete your account. Every security step is checked first.</p>
+    <a class="btn btn-danger btn-sm" href="{{ url_for('delete_account') }}">{{ icon('ban') }}<span>Delete account</span></a>
+  </section>
+</div>
+{% endblock %}

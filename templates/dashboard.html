@@ -28,6 +28,7 @@
       <div class="actions">
         <button type="button" class="btn btn-primary btn-sm" data-extend>{{ icon('clock') }}<span>Extend session</span></button>
         <a class="btn btn-ghost btn-sm" href="/logout">{{ icon('logout') }}<span>Sign out</span></a>
+        <a class="btn btn-ghost btn-sm" href="{{ url_for('account') }}">{{ icon('shield-check') }}<span>Account &amp; security</span></a>
         <a class="btn btn-ghost btn-sm" href="{{ url_for('delete_account') }}">{{ icon('ban') }}<span>Delete account</span></a>
       </div>
     </div>

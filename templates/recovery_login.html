@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, stepper, field %}
+{% block title %}Use a recovery code - Secure Login Testing{% endblock %}
+{% block content %}
+<div class="auth">
+  {{ stepper(2 if kind == 'totp' else 3) }}
+  <section class="card" data-tilt="4">
+    <div class="card-in stg">
+      <div class="hero-ic">{{ icon('key') }}</div>
+      <h1 data-split>Use a recovery code</h1>
+      <p class="sub">{% if kind == 'totp' %}Enter one of your saved recovery codes instead of the authenticator code.{% else %}Enter one of your saved recovery codes instead of your passkey. You can add a new passkey right after.{% endif %}</p>
+
+      {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
+
+      <form method="post" action="{{ url_for('recovery_login', kind=kind) }}" class="stg2" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {{ field('code', 'code', 'Recovery code', 'text', 'key', 'off', 'autofocus maxlength="12"') }}
+        <button type="submit" class="btn btn-primary btn-block">{{ icon('shield-check') }}<span>Use code</span>{{ icon('arrow', 'ic-go') }}</button>
+      </form>
+
+      <p class="alt"><a href="{{ url_for('verify_totp_page' if kind == 'totp' else 'verify_passkey_page') }}">Back</a></p>
+    </div>
+  </section>
+</div>
+{% endblock %}

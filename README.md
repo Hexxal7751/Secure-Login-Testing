@@ -16,6 +16,12 @@ A Flask authentication demo with **username + password or Google sign-in**, **TO
 - **Three-layer sign-in**: first factor → TOTP code → passkey
 - **Passkeys (WebAuthn)** required before the dashboard is reachable
 - **Password reset** by emailed 8-character code (email verification only; signing in afterwards still needs TOTP and a passkey)
+- **Recovery codes**: 8 one-time backup codes, shown once at sign-up, that replace a lost authenticator or passkey
+- **Passkey manager**: list, rename, add and remove passkeys (the last one can't be removed)
+- **Change password / change email**, each confirmed with emailed codes
+- **Security alert emails** for password resets and changes, email changes, new or removed passkeys, recovery-code use, Google linking and account deletion
+- **Signed-in devices and history**: device, approximate location and time of recent sign-ins, with "sign out" per device or everywhere else (sessions are revocable on the server)
+- **Link Google** to an existing account (or unlink it), safely
 - **Account deletion** that re-checks every factor (password or Google, email code, TOTP, passkey) and ends with a typed confirmation
 - **Rate limiting** and a temporary **account lockout** after repeated failed logins
 - **CSRF tokens** on every form and passkey request
@@ -39,6 +45,12 @@ A Flask authentication demo with **username + password or Google sign-in**, **TO
 3. Set up TOTP
 4. Register a passkey
 5. Dashboard
+
+**Account & security page** (dashboard → Account & security): change password or email, manage passkeys, regenerate recovery codes, link or unlink Google, see signed-in devices and recent sign-ins.
+
+**Lost your phone?** On the authenticator step or the passkey step, choose "Use a recovery code". Each code works once and replaces that one factor, so replacing both uses two codes. Add a new passkey right after.
+
+**Google + existing account**: if you sign in with Google using an email that already belongs to a password account, nothing is linked yet. Sign in to that account with your password, authenticator and passkey, and Google is linked automatically at the end.
 
 **Returning user**: sign in with your password *or* Google → TOTP code → passkey → dashboard. No email code is needed to sign in.
 
@@ -74,6 +86,9 @@ ORIGIN=https://yourdomain.com
 GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-xxxx
 
+# Optional: set to off to stop looking up approximate locations of sign-ins (uses ipwho.is)
+# GEOIP=off
+
 # Email codes: choose ONE option
 # A) AgentMail (no domain needed)
 AGENTMAIL_API_KEY=am_xxxx
@@ -97,9 +112,10 @@ With `FLASK_ENV=development` and no email provider set, codes are printed to the
 | 2FA | TOTP (pyotp), 6-digit codes |
 | Passkeys | WebAuthn registration + authentication |
 | Email codes | 6 digits (8 letters/digits for password reset), HMAC-hashed in the database, 10-minute expiry, 5 attempts, resend limits |
-| Sessions | HttpOnly, Secure, SameSite=Lax, 30-minute lifetime |
+| Sessions | HttpOnly, Secure, SameSite=Lax cookie, 30-minute idle lifetime, plus a server-side record that can be revoked |
 | CSRF | Per-session token checked on every POST |
 | Rate limits | Default 2000/day and 300/hour per IP; stricter limits on login, register, Google, email codes and deletion |
+| Recovery codes | 8 per set, random 10 characters, stored only as HMAC hashes, single use |
 | Lockout | 5 failed logins lock the account for 15 minutes |
 | Database | Parameterized queries; RLS policies provided |
 
@@ -134,6 +150,7 @@ security_logging.py         Security event logging
 supabase_rls_policies.sql   Tables and Row-Level Security policies
 requirements.txt            Python dependencies
 templates/                  Jinja pages (login, register, forgot/reset password, verify_email, choose_username,
+                            account, passkeys, change_password, change_email, recovery_codes, recovery_login,
                             setup/verify TOTP + passkey, dashboard, delete_account, error)
 static/css/style.css        All styling (no inline styles, CSP-safe)
 static/js/app.js            UI behaviour and passkey calls
