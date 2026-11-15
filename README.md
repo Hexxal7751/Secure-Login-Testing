@@ -132,6 +132,8 @@ Rate-limit counters are stored **in memory** (reset on restart, not shared betwe
 
 ## 🧰 Troubleshooting (Render logs)
 
+**Copying files on a phone:** keep every file under about 100,000 characters. A longer file can be silently cut off when pasted, which is why the code is split into several modules. If a file is incomplete, the app stops at startup with `... looks cut off`; paste that file again in full. Also make sure `__pycache__/` is in `.gitignore`.
+
 | Log message | Cause and fix |
 | --- | --- |
 | `FATAL: (ENOTFOUND) tenant/user ... not found` | `SUPABASE_URL` is wrong, or the Supabase project is paused. Restore the project, then copy a fresh pooler string from Supabase → Connect. |
@@ -144,7 +146,11 @@ The app prints a configuration warning at startup (without showing any secret) w
 ## 🗂️ Project structure
 
 ```
-app.py                      Flask app: routes, Google, email codes, deletion, headers, errors
+app.py                      Entry point (gunicorn app:app) + a check that no file was cut off
+core.py                     Config, database, email, sessions, helpers shared by all routes
+routes_auth.py              Login, register, Google, passkeys, TOTP, dashboard
+routes_account.py           Account hub, deletion, password reset, recovery codes, changes
+routes_misc.py              Logout and error pages
 security_middleware.py      Input validation helpers (validate_email is used by app.py)
 security_logging.py         Security event logging
 supabase_rls_policies.sql   Tables and Row-Level Security policies

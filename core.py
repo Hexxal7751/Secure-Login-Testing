@@ -1,0 +1,1028 @@
+import os
+import re
+import json
+import hmac
+import base64
+import hashlib
+import secrets
+import logging
+import threading
+import ipaddress
+import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from functools import wraps
+from io import BytesIO
+
+import bcrypt
+import psycopg2
+import pyotp
+import qrcode
+from psycopg2 import errors as pg_errors
+from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
+from flask import (
+    Flask, abort, request, render_template, redirect, url_for, session, flash,
+    make_response, jsonify, g, has_request_context,
+)
+from werkzeug.exceptions import HTTPException
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from webauthn import (
+    generate_registration_options,
+    verify_registration_response,
+    generate_authentication_options,
+    verify_authentication_response,
+    options_to_json,
+)
+from webauthn.helpers.structs import (
+    AuthenticatorSelectionCriteria,
+    UserVerificationRequirement,
+    ResidentKeyRequirement,
+    RegistrationCredential,
+    AuthenticationCredential,
+    PublicKeyCredentialDescriptor,
+    AuthenticatorAttestationResponse,
+    AuthenticatorAssertionResponse,
+)
+from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
+
+from security_logging import log_security_event
+from security_middleware import validate_email
+
+# Load environment variables
+load_dotenv()
+
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+app.secret_key = os.getenv("FLASK_PASS")
+
+# Trust proxy headers (needed on Render)
+app.config["PREFERRED_URL_SCHEME"] = "https"
+if os.getenv("FLASK_ENV") == "production":
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
+# Session security
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=30)
+app.config["SESSION_REFRESH_EACH_REQUEST"] = True
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+# WebAuthn
+RP_ID = os.getenv("RP_ID", "localhost")
+RP_NAME = "Secure Login Testing"
+ORIGIN = os.getenv("ORIGIN", "http://localhost:10000").strip().rstrip("/")
+
+# Google sign-in (OpenID Connect)
+def _clean_env(value):
+    """Trim spaces and quotes that often get pasted along with a value."""
+    return (value or "").strip().strip("\"'").strip()
+
+
+GOOGLE_CLIENT_ID = _clean_env(os.getenv("GOOGLE_CLIENT_ID"))
+GOOGLE_CLIENT_SECRET = _clean_env(os.getenv("GOOGLE_CLIENT_SECRET"))
+GOOGLE_REDIRECT_URI = _clean_env(os.getenv("GOOGLE_REDIRECT_URI")) or f"{ORIGIN}/auth/google/callback"
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+# Email is sent over HTTPS (Render's free tier blocks SMTP). Pick ONE option in .env:
+#  A) AgentMail (no domain needed): AGENTMAIL_API_KEY + AGENTMAIL_INBOX (e.g. sltesting@agentmail.to)
+#  B) Resend (needs a domain you own): RESEND_API_KEY + MAIL_FROM (e.g. login@yourdomain.com)
+AGENTMAIL_API_KEY = os.getenv("AGENTMAIL_API_KEY", "").strip()
+AGENTMAIL_INBOX = os.getenv("AGENTMAIL_INBOX", "").strip()
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+MAIL_FROM = os.getenv("MAIL_FROM", "").strip()
+MAIL_FROM_NAME = os.getenv("MAIL_FROM_NAME", "Secure Login Testing").strip()
+HTTP_UA = "secure-login-testing/1.0"
+
+EMAIL_CODE_TTL = timedelta(minutes=10)
+EMAIL_CODE_MAX_ATTEMPTS = 5
+DEL_TTL = timedelta(minutes=10)
+PENDING_GOOGLE_TTL = timedelta(minutes=15)
+RESET_TTL = timedelta(minutes=15)
+ACT_TTL = timedelta(minutes=10)
+SESSION_IDLE = timedelta(minutes=30)
+
+def check_config():
+    """Log obvious configuration mistakes at startup (values are never printed)."""
+    if not os.getenv("FLASK_PASS"):
+        app.logger.error("FLASK_PASS is not set: sessions will not work.")
+    url = os.getenv("SUPABASE_URL") or ""
+    if not url.startswith(("postgresql://", "postgres://")):
+        app.logger.error("SUPABASE_URL is missing or doesn't start with postgresql://")
+    if GOOGLE_CLIENT_ID and not GOOGLE_CLIENT_ID.endswith(".apps.googleusercontent.com"):
+        app.logger.warning("GOOGLE_CLIENT_ID doesn't end with .apps.googleusercontent.com")
+    if GOOGLE_CLIENT_ID and not (GOOGLE_CLIENT_SECRET.startswith("GOCSPX-") and len(GOOGLE_CLIENT_SECRET) == 35):
+        app.logger.warning(
+            "GOOGLE_CLIENT_SECRET looks wrong: expected 35 characters starting with GOCSPX-, got %d characters.",
+            len(GOOGLE_CLIENT_SECRET))
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=["2000 per day", "300 per hour"],
+    storage_uri="memory://",
+    strategy="fixed-window",
+)
+
+login_limit = "5 per minute; 20 per hour"
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9_]{3,20}$")
+TOTP_REGEX = re.compile(r"^\d{6}$")
+# Password-reset codes: 8 letters/digits, no look-alikes (no I, O, 0, 1)
+CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+RESET_CODE_REGEX = re.compile(r"^[A-HJ-NP-Z2-9]{8}$")
+RECOVERY_REGEX = re.compile(r"^[A-HJ-NP-Z2-9]{10}$")
+
+# Used so unknown users / Google-only users cost the same time as a real check
+DUMMY_HASH = bcrypt.hashpw(b"not-a-real-password", bcrypt.gensalt()).decode("utf-8")
+
+
+def utcnow():
+    """Naive UTC 'now' (matches how timestamps are stored)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def mask_email(email):
+    if not email or "@" not in email:
+        return ""
+    name, domain = email.split("@", 1)
+    return f"{name[:1]}***@{domain}"
+
+
+def log_event(event_type, details=None, level="INFO"):
+    """Security logging must never break a request."""
+    try:
+        log_security_event(event_type, details or {}, level)
+    except Exception:
+        app.logger.exception("security log failed")
+
+
+def get_nonce():
+    if "csp_nonce" not in g:
+        g.csp_nonce = secrets.token_hex(16)
+    return g.csp_nonce
+
+
+@app.before_request
+def before_request():
+    get_nonce()
+
+
+@app.context_processor
+def inject_nonce():
+    return {"csp_nonce": get_nonce()}
+
+
+@app.before_request
+def enforce_https():
+    if os.getenv("FLASK_ENV") == "production":
+        is_secure = request.is_secure or request.headers.get("X-Forwarded-Proto") == "https"
+        if not is_secure and request.url.startswith("http://"):
+            return redirect(request.url.replace("http://", "https://", 1), code=301)
+
+
+# ---------------------------------------------------------------------------
+# Security headers
+# ---------------------------------------------------------------------------
+@app.after_request
+def add_security_headers(response):
+    nonce = get_nonce()
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        f"script-src 'self' 'nonce-{nonce}' https://cdn.jsdelivr.net; "
+        f"style-src 'self' 'nonce-{nonce}' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-src 'none'; "
+        "object-src 'none'; "
+        "base-uri 'self'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+# ---------------------------------------------------------------------------
+# CSRF
+# ---------------------------------------------------------------------------
+def generate_csrf_token():
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_hex(32)
+    return session["csrf_token"]
+
+
+def validate_csrf_token():
+    if request.method == "POST":
+        token = request.form.get("csrf_token") or request.headers.get("X-CSRFToken")
+        if not token or not hmac.compare_digest(str(token), str(session.get("csrf_token", ""))):
+            return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+def _connect():
+    url = os.getenv("SUPABASE_URL")
+    if not url:
+        raise RuntimeError("SUPABASE_URL is not set")
+    return psycopg2.connect(url, connect_timeout=10)
+
+
+def get_db_connection(user_id=None):
+    if user_id is None and has_request_context() and "user_id" in session:
+        user_id = session["user_id"]
+
+    conn = _connect()
+
+    if user_id is not None:
+        with conn.cursor() as cur:
+            cur.execute("SET app.current_user_id = %s", (str(user_id),))
+            conn.commit()
+    else:
+        with conn.cursor() as cur:
+            cur.execute("SET app.is_admin = true")
+            conn.commit()
+    return conn
+
+
+def get_admin_connection():
+    """Connection that always runs in admin mode (inserts, deletes, lookups)."""
+    conn = _connect()
+    with conn.cursor() as cur:
+        cur.execute("SET app.is_admin = true")
+        conn.commit()
+    return conn
+
+
+def reset_connection_context(conn):
+    try:
+        with conn.cursor() as cur:
+            cur.execute("RESET app.current_user_id")
+            cur.execute("RESET app.is_admin")
+            conn.commit()
+    except Exception as e:
+        app.logger.error(f"Error resetting connection context: {e}")
+    finally:
+        conn.close()
+
+
+def db_run(sql, params=(), fetch=None, user_id=None, admin=False):
+    """Run one statement. fetch: None | 'one' | 'all'."""
+    conn = get_admin_connection() if admin else get_db_connection(user_id)
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(sql, params)
+        result = None
+        if fetch == "one":
+            result = cur.fetchone()
+        elif fetch == "all":
+            result = cur.fetchall()
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        reset_connection_context(conn)
+
+
+def db_batch(statements, admin=True, user_id=None):
+    """Run several (sql, params) statements in ONE transaction."""
+    conn = get_admin_connection() if admin else get_db_connection(user_id)
+    try:
+        cur = conn.cursor()
+        for sql, params in statements:
+            cur.execute(sql, params)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        reset_connection_context(conn)
+
+
+def create_users_table():
+    """Create tables and add any missing columns. Safe to run every start."""
+    conn = get_admin_connection()
+    try:
+        cur = conn.cursor()
+        statements = [
+            """CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(100) UNIQUE NOT NULL,
+                password TEXT,
+                passkey_enabled BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                failed_login_attempts INTEGER DEFAULT 0,
+                account_locked_until TIMESTAMP
+            )""",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS secret TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS passkey_enabled BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(10) DEFAULT 'password'",
+            "ALTER TABLE users ALTER COLUMN password DROP NOT NULL",
+            "CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub_key ON users (google_sub) WHERE google_sub IS NOT NULL",
+            "CREATE UNIQUE INDEX IF NOT EXISTS users_email_verified_key ON users (lower(email)) WHERE email_verified",
+            """CREATE TABLE IF NOT EXISTS passkeys (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                credential_id TEXT UNIQUE NOT NULL,
+                public_key TEXT NOT NULL,
+                sign_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS email_codes (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                purpose VARCHAR(20) NOT NULL,
+                email TEXT NOT NULL,
+                code_hash TEXT NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                attempts INTEGER DEFAULT 0,
+                used BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP NOT NULL
+            )""",
+            "CREATE INDEX IF NOT EXISTS email_codes_user_idx ON email_codes (user_id, purpose)",
+            "ALTER TABLE passkeys ADD COLUMN IF NOT EXISTS name TEXT",
+            "ALTER TABLE passkeys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP",
+            """CREATE TABLE IF NOT EXISTS recovery_codes (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                code_hash TEXT NOT NULL,
+                used BOOLEAN DEFAULT FALSE,
+                used_at TIMESTAMP,
+                created_at TIMESTAMP NOT NULL
+            )""",
+            "CREATE INDEX IF NOT EXISTS recovery_codes_user_idx ON recovery_codes (user_id)",
+            """CREATE TABLE IF NOT EXISTS user_sessions (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                created_at TIMESTAMP NOT NULL,
+                last_seen TIMESTAMP NOT NULL,
+                ip TEXT,
+                user_agent TEXT,
+                device TEXT,
+                location TEXT,
+                method VARCHAR(12),
+                completed BOOLEAN DEFAULT FALSE,
+                revoked BOOLEAN DEFAULT FALSE,
+                ended_at TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS user_sessions_user_idx ON user_sessions (user_id, created_at)",
+        ]
+        for sql in statements:
+            try:
+                cur.execute(sql)
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                app.logger.error(f"Migration step failed: {e} :: {sql[:60]}")
+    finally:
+        reset_connection_context(conn)
+
+
+def init_db():
+    try:
+        create_users_table()
+    except psycopg2.OperationalError as e:
+        app.logger.error(
+            "Database setup failed: %s | Check SUPABASE_URL in Render (copy a fresh connection "
+            "string from Supabase -> Connect, make sure the project isn't paused).", str(e).strip()[:300])
+    except Exception:
+        app.logger.exception("Database setup failed")
+
+
+# Runs under gunicorn too (the old code only ran this under `python app.py`)
+check_config()
+init_db()
+
+
+def get_user(username):
+    return db_run("SELECT * FROM users WHERE username = %s", (username,), fetch="one", admin=True)
+
+
+def get_user_by_id(user_id):
+    return db_run("SELECT * FROM users WHERE id = %s", (user_id,), fetch="one", user_id=user_id)
+
+
+def get_user_by_google_sub(sub):
+    return db_run("SELECT * FROM users WHERE google_sub = %s", (sub,), fetch="one", admin=True)
+
+
+def get_user_by_verified_email(email):
+    return db_run(
+        "SELECT * FROM users WHERE lower(email) = lower(%s) AND email_verified = TRUE",
+        (email,), fetch="one", admin=True,
+    )
+
+
+def get_user_passkeys(user_id):
+    return db_run("SELECT * FROM passkeys WHERE user_id = %s ORDER BY id", (user_id,), fetch="all", user_id=user_id)
+
+
+def save_passkey(user_id, credential_id, public_key, name=None):
+    db_run(
+        "INSERT INTO passkeys (user_id, credential_id, public_key, name) VALUES (%s, %s, %s, %s)",
+        (user_id, credential_id, public_key, name), user_id=user_id,
+    )
+
+
+def update_passkey_sign_count(credential_id, sign_count, user_id):
+    db_run(
+        "UPDATE passkeys SET sign_count = %s, last_used_at = %s WHERE credential_id = %s",
+        (sign_count, utcnow(), credential_id), user_id=user_id,
+    )
+
+
+def get_passkey_by_credential_id(credential_id, user_id):
+    return db_run(
+        "SELECT * FROM passkeys WHERE credential_id = %s AND user_id = %s",
+        (credential_id, user_id), fetch="one", user_id=user_id,
+    )
+
+
+def delete_user_everything(user_id):
+    """Remove the account and everything attached to it in one transaction."""
+    db_batch([
+        ("DELETE FROM email_codes WHERE user_id = %s", (user_id,)),
+        ("DELETE FROM recovery_codes WHERE user_id = %s", (user_id,)),
+        ("DELETE FROM user_sessions WHERE user_id = %s", (user_id,)),
+        ("DELETE FROM passkeys WHERE user_id = %s", (user_id,)),
+        ("DELETE FROM users WHERE id = %s", (user_id,)),
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Email sending + one-time codes
+# ---------------------------------------------------------------------------
+def _post_json(url, payload, headers):
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={**headers, "Content-Type": "application/json", "User-Agent": HTTP_UA},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return 200 <= resp.status < 300
+
+
+def _send_via_resend(to_email, subject, text):
+    return _post_json(
+        "https://api.resend.com/emails",
+        {"from": f"{MAIL_FROM_NAME} <{MAIL_FROM}>", "to": [to_email], "subject": subject, "text": text},
+        {"Authorization": f"Bearer {RESEND_API_KEY}"},
+    )
+
+
+def _send_via_agentmail(to_email, subject, text):
+    inbox = urllib.parse.quote(AGENTMAIL_INBOX, safe="@")
+    return _post_json(
+        f"https://api.agentmail.to/v0/inboxes/{inbox}/messages/send",
+        {"to": [to_email], "subject": subject, "text": text},
+        {"Authorization": f"Bearer {AGENTMAIL_API_KEY}"},
+    )
+
+
+def send_email(to_email, subject, text):
+    """Send one plain-text email. Returns True on success."""
+    if RESEND_API_KEY and MAIL_FROM:
+        sender = _send_via_resend
+    elif AGENTMAIL_API_KEY and AGENTMAIL_INBOX:
+        sender = _send_via_agentmail
+    else:
+        if os.getenv("FLASK_ENV") == "development":
+            app.logger.warning("[DEV EMAIL] to=%s subject=%s\n%s", to_email, subject, text)
+            return True
+        app.logger.error("Email is not configured (set AGENTMAIL_API_KEY + AGENTMAIL_INBOX, or RESEND_API_KEY + MAIL_FROM).")
+        return False
+    try:
+        return sender(to_email, subject, text)
+    except urllib.error.HTTPError as e:
+        app.logger.error("Email provider rejected the message: %s %s", e.code, e.read()[:300])
+    except Exception as e:
+        app.logger.error("Email send failed: %s", e)
+    return False
+
+
+def _code_hash(user_id, purpose, code):
+    key = (app.secret_key or "").encode("utf-8")
+    msg = f"{user_id}:{purpose}:{code}".encode("utf-8")
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+def has_active_code(user_id, purpose):
+    row = db_run(
+        """SELECT 1 AS ok FROM email_codes
+           WHERE user_id = %s AND purpose = %s AND used = FALSE
+             AND expires_at > %s AND attempts < %s LIMIT 1""",
+        (user_id, purpose, utcnow(), EMAIL_CODE_MAX_ATTEMPTS), fetch="one", admin=True,
+    )
+    return bool(row)
+
+
+def issue_email_code(user_id, purpose, email):
+    """Create a code (6 digits; 8 letters/digits for password reset) and email it. Returns (ok, error_message)."""
+    now = utcnow()
+    recent = db_run(
+        """SELECT created_at FROM email_codes
+           WHERE user_id = %s AND purpose = %s AND created_at > %s
+           ORDER BY created_at DESC""",
+        (user_id, purpose, now - timedelta(hours=1)), fetch="all", admin=True,
+    )
+    if len(recent) >= 5:
+        return False, "Too many codes requested. Please try again in an hour."
+    if recent and (now - recent[0]["created_at"]).total_seconds() < 45:
+        return False, "Please wait a moment before requesting another code."
+
+    if purpose == "reset":
+        code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
+        shown = f"{code[:4]}-{code[4:]}"
+    else:
+        code = f"{secrets.randbelow(1000000):06d}"
+        shown = code
+    db_batch([
+        ("UPDATE email_codes SET used = TRUE WHERE user_id = %s AND purpose = %s AND used = FALSE",
+         (user_id, purpose)),
+        ("INSERT INTO email_codes (user_id, purpose, email, code_hash, expires_at, created_at) "
+         "VALUES (%s, %s, %s, %s, %s, %s)",
+         (user_id, purpose, email, _code_hash(user_id, purpose, code), now + EMAIL_CODE_TTL, now)),
+    ])
+
+    what = {"register": "finish creating your account",
+            "delete": "delete your account",
+            "reset": "reset your password",
+            "chgpw": "change your password",
+            "chgemail_old": "change your email address",
+            "chgemail_new": "confirm your new email address"}.get(purpose, "continue")
+    ok = send_email(
+        email,
+        f"Your Secure Login Testing code: {shown}",
+        f"Your verification code is {shown}\n\n"
+        f"Use it to {what}. It expires in 10 minutes.\n\n"
+        "If you didn't ask for this, you can ignore this email.",
+    )
+    if not ok:
+        return False, "We couldn't send the email. Please try again shortly."
+    return True, None
+
+
+def check_email_code(user_id, purpose, code):
+    """Returns (ok, error_message, email_the_code_was_sent_to)."""
+    row = db_run(
+        """SELECT * FROM email_codes
+           WHERE user_id = %s AND purpose = %s AND used = FALSE
+           ORDER BY created_at DESC LIMIT 1""",
+        (user_id, purpose), fetch="one", admin=True,
+    )
+    if not row or row["expires_at"] <= utcnow() or row["attempts"] >= EMAIL_CODE_MAX_ATTEMPTS:
+        return False, "That code has expired. Request a new one.", None
+
+    if hmac.compare_digest(row["code_hash"], _code_hash(user_id, purpose, code)):
+        db_run("UPDATE email_codes SET used = TRUE WHERE id = %s", (row["id"],), admin=True)
+        return True, None, row["email"]
+
+    db_run("UPDATE email_codes SET attempts = attempts + 1 WHERE id = %s", (row["id"],), admin=True)
+    left = EMAIL_CODE_MAX_ATTEMPTS - row["attempts"] - 1
+    if left <= 0:
+        return False, "Too many wrong codes. Request a new one.", None
+    return False, "Incorrect code. Please try again.", None
+
+
+# ---------------------------------------------------------------------------
+# Auth flow helpers
+# ---------------------------------------------------------------------------
+def client_ip():
+    """Best-effort visitor IP behind Render's proxy (for display and alerts only)."""
+    ip = (request.headers.get("CF-Connecting-IP")
+          or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+          or request.remote_addr or "")
+    return ip[:64]
+
+
+def device_label(ua):
+    """Turn a User-Agent string into something like 'Chrome on Android'."""
+    ua = ua or ""
+    if "Edg/" in ua or "EdgA/" in ua:
+        browser = "Edge"
+    elif "OPR/" in ua or "Opera" in ua:
+        browser = "Opera"
+    elif "SamsungBrowser" in ua:
+        browser = "Samsung Internet"
+    elif "Firefox/" in ua or "FxiOS" in ua:
+        browser = "Firefox"
+    elif "Chrome/" in ua or "CriOS" in ua:
+        browser = "Chrome"
+    elif "Safari/" in ua:
+        browser = "Safari"
+    else:
+        browser = "Browser"
+    if "Android" in ua:
+        system = "Android"
+    elif "iPhone" in ua or "iPad" in ua or "iPod" in ua:
+        system = "iOS"
+    elif "Windows" in ua:
+        system = "Windows"
+    elif "CrOS" in ua:
+        system = "ChromeOS"
+    elif "Mac OS X" in ua or "Macintosh" in ua:
+        system = "macOS"
+    elif "Linux" in ua:
+        system = "Linux"
+    else:
+        system = ""
+    return f"{browser} on {system}" if system else browser
+
+
+def geo_lookup(ip):
+    """Rough 'City, Country' for an IP via ipwho.is. Set GEOIP=off to disable."""
+    if os.getenv("GEOIP", "on").strip().lower() in ("off", "0", "false", "no"):
+        return None
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if addr.is_private or addr.is_loopback or addr.is_reserved:
+        return "Local network"
+    try:
+        url = f"https://ipwho.is/{urllib.parse.quote(ip, safe=':')}?fields=success,city,country"
+        req = urllib.request.Request(url, headers={"User-Agent": HTTP_UA})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("success") is False:
+            return None
+        return ", ".join(p for p in (data.get("city"), data.get("country")) if p) or None
+    except Exception:
+        return None
+
+
+def run_async(fn):
+    """Run a slow, non-essential job (alert email, geo lookup) without blocking the request."""
+    threading.Thread(target=fn, daemon=True).start()
+
+
+def _fill_location(sid, ip):
+    try:
+        place = geo_lookup(ip)
+        if place:
+            db_run("UPDATE user_sessions SET location = %s WHERE id = %s", (place, sid), admin=True)
+    except Exception:
+        app.logger.exception("location update failed")
+
+
+def create_session_row(user_id, method):
+    sid = secrets.token_urlsafe(32)
+    now = utcnow()
+    ip = client_ip()
+    ua = (request.headers.get("User-Agent") or "")[:300]
+    db_run(
+        "INSERT INTO user_sessions (id, user_id, created_at, last_seen, ip, user_agent, device, method) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (sid, user_id, now, now, ip, ua, device_label(ua), method), admin=True,
+    )
+    try:
+        db_run("DELETE FROM user_sessions WHERE user_id = %s AND created_at < %s",
+               (user_id, now - timedelta(days=90)), admin=True)
+    except Exception:
+        app.logger.exception("session history cleanup failed")
+    run_async(lambda: _fill_location(sid, ip))
+    return sid
+
+
+def touch_session(sid, user_id):
+    """True if this session is still valid on the server (not signed out remotely)."""
+    row = db_run("SELECT revoked, last_seen FROM user_sessions WHERE id = %s AND user_id = %s",
+                 (sid, user_id), fetch="one", admin=True)
+    if not row or row["revoked"]:
+        return False
+    now = utcnow()
+    if (now - row["last_seen"]).total_seconds() > 60:
+        db_run("UPDATE user_sessions SET last_seen = %s WHERE id = %s", (now, sid), admin=True)
+    return True
+
+
+def end_session(sid):
+    if sid:
+        try:
+            db_run("UPDATE user_sessions SET revoked = TRUE, ended_at = %s WHERE id = %s AND revoked = FALSE",
+                   (utcnow(), sid), admin=True)
+        except Exception:
+            app.logger.exception("could not end session")
+
+
+def revoke_other_sessions(user_id, keep_sid=None):
+    """Sign out every session of this user except keep_sid. Returns how many were active."""
+    rows = db_run(
+        "UPDATE user_sessions SET revoked = TRUE, ended_at = %s "
+        "WHERE user_id = %s AND revoked = FALSE AND id <> %s RETURNING id",
+        (utcnow(), user_id, keep_sid or ""), fetch="all", admin=True,
+    )
+    return len(rows or [])
+
+
+def send_alert(email, subject, what):
+    """Fire-and-forget security email. Never blocks and never raises."""
+    if not email:
+        return
+    details = ""
+    if has_request_context():
+        details = f"Device: {device_label(request.headers.get('User-Agent'))}\nIP address: {client_ip()}\n"
+    body = (f"{what}\n\nWhen (UTC): {utcnow().strftime('%Y-%m-%d %H:%M')}\n{details}\n"
+            "If this was you, no action is needed.\n"
+            "If it wasn't, reset your password and review your passkeys and signed-in devices right away.")
+
+    def _go():
+        try:
+            send_email(email, f"Security alert: {subject}", body)
+        except Exception:
+            app.logger.exception("security alert failed")
+    run_async(_go)
+
+
+# ----- recovery codes ------------------------------------------------------
+def _norm_code(code):
+    return re.sub(r"[^A-Z0-9]", "", (code or "").upper())
+
+
+def _recovery_hash(user_id, raw):
+    key = (app.secret_key or "").encode("utf-8")
+    return hmac.new(key, f"{user_id}:recovery:{raw}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def generate_recovery_codes(user_id, count=8):
+    """Replace all recovery codes with new ones. Returns the plain codes (shown once)."""
+    now = utcnow()
+    codes, stmts = [], [("DELETE FROM recovery_codes WHERE user_id = %s", (user_id,))]
+    for _ in range(count):
+        raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(10))
+        codes.append(f"{raw[:5]}-{raw[5:]}")
+        stmts.append(("INSERT INTO recovery_codes (user_id, code_hash, created_at) VALUES (%s, %s, %s)",
+                      (user_id, _recovery_hash(user_id, raw), now)))
+    db_batch(stmts)
+    return codes
+
+
+def count_recovery_codes(user_id):
+    row = db_run("SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id = %s AND used = FALSE",
+                 (user_id,), fetch="one", admin=True)
+    return int(row["n"]) if row else 0
+
+
+def consume_recovery_code(user_id, code):
+    raw = _norm_code(code)
+    if not RECOVERY_REGEX.match(raw):
+        return False
+    row = db_run(
+        "UPDATE recovery_codes SET used = TRUE, used_at = %s WHERE id = ("
+        "SELECT id FROM recovery_codes WHERE user_id = %s AND code_hash = %s AND used = FALSE LIMIT 1) "
+        "RETURNING id",
+        (utcnow(), user_id, _recovery_hash(user_id, raw)), fetch="one", admin=True,
+    )
+    return bool(row)
+
+
+def start_login_session(user, method="password"):
+    """Fresh session for a user who just proved their first factor."""
+    keep_link = session.get("pending_link")
+    session.clear()
+    session.permanent = True
+    session["user_id"] = user["id"]
+    session["username"] = user["username"]
+    session["logged_in"] = True
+    session["last_activity"] = utcnow().isoformat()
+    if keep_link:
+        session["pending_link"] = keep_link
+    session["sid"] = create_session_row(user["id"], method)
+    try:
+        db_run(
+            "UPDATE users SET failed_login_attempts = 0, account_locked_until = NULL, "
+            "last_login = CURRENT_TIMESTAMP WHERE id = %s",
+            (user["id"],), admin=True,
+        )
+    except Exception:
+        app.logger.exception("Could not update last_login")
+
+
+def session_ok():
+    """True if the cookie session is still valid on the server (not revoked)."""
+    sid, uid = session.get("sid"), session.get("user_id")
+    return bool(sid and uid and touch_session(sid, uid))
+
+
+def link_pending_google(user):
+    """Finish a 'link Google to my existing account' request after a full sign-in."""
+    pl = session.pop("pending_link", None)
+    if not pl:
+        return
+    try:
+        fresh = utcnow() - datetime.fromisoformat(pl["t"]) < PENDING_GOOGLE_TTL
+    except Exception:
+        fresh = False
+    if (not fresh or pl.get("uid") != user["id"] or user.get("google_sub")
+            or (user.get("email") or "").lower() != pl.get("email")
+            or get_user_by_google_sub(pl["sub"])):
+        return
+    try:
+        db_run("UPDATE users SET google_sub = %s WHERE id = %s", (pl["sub"], user["id"]), admin=True)
+    except pg_errors.UniqueViolation:
+        return
+    flash("Google account linked. You can now sign in with Google too.", "success")
+    send_alert(user.get("email"), "Google account linked", "A Google account was linked to your account.")
+    log_event("google_linked", {"user_id": user["id"]}, "WARNING")
+
+
+def finish_signin(user):
+    """Called once the last factor (passkey or recovery code) is accepted."""
+    session["passkey_verified"] = True
+    session["last_activity"] = utcnow().isoformat()
+    try:
+        db_run("UPDATE user_sessions SET completed = TRUE WHERE id = %s", (session.get("sid"),), admin=True)
+        db_run("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s", (user["id"],), admin=True)
+    except Exception:
+        app.logger.exception("could not finish sign-in bookkeeping")
+    link_pending_google(user)
+
+
+def next_step(user):
+    """Endpoint name of the next page this user must visit."""
+    if user.get("email") and not user.get("email_verified"):
+        return "verify_email_page"
+    if not user.get("secret"):
+        return "setup_totp"
+    if "2fa_verified" not in session:
+        return "verify_totp_page"
+    if not get_user_passkeys(user["id"]):
+        return "setup_passkey_page"
+    if "passkey_verified" not in session:
+        return "verify_passkey_page"
+    return "dashboard"
+
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if "logged_in" not in session or "user_id" not in session:
+            flash("You must log in first!", "danger")
+            return redirect(url_for("login", next=request.path))
+
+        if "last_activity" in session:
+            try:
+                last_activity = datetime.fromisoformat(session["last_activity"])
+                if utcnow() - last_activity > timedelta(minutes=30):
+                    session.clear()
+                    flash("Session expired. Please log in again.", "warning")
+                    return redirect(url_for("login"))
+            except ValueError:
+                session.clear()
+                return redirect(url_for("login"))
+
+        sid = session.get("sid")
+        if not sid or not touch_session(sid, session["user_id"]):
+            session.clear()
+            flash("You were signed out. Please sign in again.", "warning")
+            return redirect(url_for("login"))
+
+        session["last_activity"] = utcnow().isoformat()
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def two_factor_required(f):
+    @wraps(f)
+    def decorated_function_2(*args, **kwargs):
+        if "2fa_verified" not in session:
+            flash("You must complete 2FA verification first!", "danger")
+            return redirect(url_for("verify_totp_page"))
+        return f(*args, **kwargs)
+    return decorated_function_2
+
+
+def passkey_verified_required(f):
+    @wraps(f)
+    def decorated_function_3(*args, **kwargs):
+        if "passkey_verified" not in session:
+            flash("You must complete Passkey verification first!", "danger")
+            return redirect(url_for("verify_passkey_page"))
+        return f(*args, **kwargs)
+    return decorated_function_3
+
+
+def verify_totp(secret, code):
+    if not secret or not code:
+        return False
+    return pyotp.TOTP(secret).verify(code)
+
+
+# ---------------------------------------------------------------------------
+# Passkeys
+# ---------------------------------------------------------------------------
+def _json_error(message, code):
+    return jsonify({"error": message}), code
+
+
+def _passkey_register_allowed(user_id):
+    """First passkey needs 2FA done; extra passkeys also need a passkey login."""
+    if "2fa_verified" not in session:
+        return False
+    return (not get_user_passkeys(user_id)) or ("passkey_verified" in session)
+
+
+def _verify_assertion(data, passkey, challenge_b64, require_uv=False):
+    resp = data["response"]
+    credential = AuthenticationCredential(
+        id=data["id"],
+        raw_id=base64url_to_bytes(data["rawId"]),
+        response=AuthenticatorAssertionResponse(
+            authenticator_data=base64url_to_bytes(resp["authenticatorData"]),
+            client_data_json=base64url_to_bytes(resp["clientDataJSON"]),
+            signature=base64url_to_bytes(resp["signature"]),
+            user_handle=base64url_to_bytes(resp["userHandle"]) if resp.get("userHandle") else None,
+        ),
+        type=data["type"],
+    )
+    return verify_authentication_response(
+        credential=credential,
+        expected_rp_id=RP_ID,
+        expected_origin=ORIGIN,
+        expected_challenge=base64url_to_bytes(challenge_b64 or ""),
+        credential_public_key=base64url_to_bytes(passkey["public_key"]),
+        credential_current_sign_count=passkey["sign_count"],
+        require_user_verification=require_uv,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Account deletion (every factor + typed confirmation)
+# ---------------------------------------------------------------------------
+DEL_LABELS = {
+    "password": "Password",
+    "google": "Google account",
+    "email": "Email code",
+    "totp": "Authenticator code",
+    "passkey": "Passkey",
+    "confirm": "Final confirmation",
+}
+
+
+def del_steps(user):
+    first = "google" if user.get("auth_provider") == "google" else "password"
+    return [first, "email", "totp", "passkey", "confirm"]
+
+
+def get_del_flow(user_id):
+    flow = session.get("del")
+    if flow and flow.get("uid") == user_id:
+        try:
+            if utcnow() - datetime.fromisoformat(flow["t"]) < DEL_TTL:
+                return flow
+        except Exception:
+            pass
+    session.pop("del", None)
+    return None
+
+
+def save_del_flow(flow):
+    session["del"] = flow
+    session.modified = True
+
+
+def start_del_flow(user_id):
+    flow = {"uid": user_id, "t": utcnow().isoformat(), "done": [], "fails": 0, "email_target": None}
+    save_del_flow(flow)
+    return flow
+
+
+def _del_current(user, flow):
+    return next((s for s in del_steps(user) if s not in flow["done"]), None)
+
+
+# Everything above is shared with the route modules (underscore names included).
+__all__ = [n for n in list(globals()) if not n.startswith("__")]
+
+# END OF core.py
