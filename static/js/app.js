@@ -308,6 +308,18 @@
     }));
   }
 
+  // Light / dark theme (the choice is remembered in this browser)
+  document.addEventListener('click', e => {
+    const t = e.target.closest('[data-theme-toggle]'); if (!t) return;
+    const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem('theme', next); } catch (_) {}
+  });
+  // Close the language menu when tapping elsewhere
+  document.addEventListener('click', e => {
+    $$('details.lang[open]').forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); });
+  });
+
   particles(); pointerFx();
   window.SL = { toast };
 })();

@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_login TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     failed_login_attempts INTEGER DEFAULT 0,
-    account_locked_until TIMESTAMP
+    account_locked_until TIMESTAMP,
+    disabled BOOLEAN DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS passkeys (
@@ -70,6 +71,29 @@ CREATE TABLE IF NOT EXISTS user_sessions (
 ALTER TABLE passkeys ADD COLUMN IF NOT EXISTS name TEXT;
 ALTER TABLE passkeys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP;
 
+CREATE TABLE IF NOT EXISTS trusted_devices (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    device TEXT,
+    ip TEXT,
+    created_at TIMESTAMP NOT NULL,
+    last_used TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS security_events (
+    id SERIAL PRIMARY KEY,
+    at TIMESTAMP NOT NULL,
+    event TEXT NOT NULL,
+    level VARCHAR(10),
+    user_id INTEGER,
+    ip TEXT,
+    details TEXT
+);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN DEFAULT FALSE;
+
 -- 2) Helper functions (the app sets app.current_user_id / app.is_admin per connection)
 CREATE OR REPLACE FUNCTION get_session_user_id()
 RETURNS INTEGER AS $$
@@ -100,6 +124,8 @@ ALTER TABLE passkeys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_codes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE recovery_codes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trusted_devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE security_events ENABLE ROW LEVEL SECURITY;
 
 -- 4) users policies
 DROP POLICY IF EXISTS users_select_policy ON users;
@@ -158,5 +184,16 @@ CREATE POLICY recovery_codes_admin_policy ON recovery_codes
 
 DROP POLICY IF EXISTS user_sessions_admin_policy ON user_sessions;
 CREATE POLICY user_sessions_admin_policy ON user_sessions
+    FOR ALL
+    USING (is_admin());
+
+-- 8) trusted_devices and security_events: server (admin mode) only
+DROP POLICY IF EXISTS trusted_devices_admin_policy ON trusted_devices;
+CREATE POLICY trusted_devices_admin_policy ON trusted_devices
+    FOR ALL
+    USING (is_admin());
+
+DROP POLICY IF EXISTS security_events_admin_policy ON security_events;
+CREATE POLICY security_events_admin_policy ON security_events
     FOR ALL
     USING (is_admin());

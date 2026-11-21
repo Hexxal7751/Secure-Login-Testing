@@ -6,7 +6,8 @@ incomplete (for example a copy/paste that was truncated).
 """
 import os
 
-PARTS = ("app", "core", "routes_auth", "routes_account", "routes_misc")
+PARTS = ("app", "core", "routes_auth", "routes_account", "routes_admin", "routes_misc",
+         "i18n", "translations_es", "translations_fr")
 
 
 def _check_files_complete():
@@ -25,6 +26,7 @@ _check_files_complete()
 from core import app  # noqa: E402  (creates the Flask app, config, database and email helpers)
 import routes_auth  # noqa: E402,F401
 import routes_account  # noqa: E402,F401
+import routes_admin  # noqa: E402,F401
 import routes_misc  # noqa: E402,F401
 
 if __name__ == "__main__":

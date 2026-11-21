@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Admin - Secure Login Testing{% endblock %}
+{% block page %}dash{% endblock %}
+{% block header_actions %}
+<a class="btn btn-ghost btn-sm" href="{{ url_for('account') }}">{{ icon('back') }}<span>Account</span></a>
+{% endblock %}
+{% block content %}
+<div class="wrap">
+  <section class="card hero" data-tilt="2">
+    <div class="card-in stg">
+      <span class="badge"><i class="dot-live"></i>Admin</span>
+      <h1 data-split>Users &amp; security events</h1>
+      <div class="meta">
+        <span class="meta-i">{{ icon('user') }}{{ stats.users }} users</span>
+        <span class="meta-i">{{ icon('activity') }}{{ stats.online }} online</span>
+        <span class="meta-i">{{ icon('lock') }}{{ stats.locked }} locked</span>
+        <span class="meta-i">{{ icon('ban') }}{{ stats.disabled }} disabled</span>
+        <a class="meta-i" href="{{ url_for('admin_network') }}">{{ icon('code') }}Network check</a>
+      </div>
+    </div>
+  </section>
+
+  <h2 class="sec-h">Users</h2>
+  <section class="tile">
+    <form method="get" action="{{ url_for('admin') }}" class="inline-rename">
+      <input class="mini" name="q" value="{{ q }}" maxlength="30" placeholder="Search username" aria-label="Search username">
+      <button type="submit" class="btn btn-ghost btn-sm">Search</button>
+    </form>
+    <ul class="rows">
+      {% for u in users %}
+      <li class="row">
+        <div class="row-main">
+          <b>{{ u.username }}
+            {% if u.is_admin %}<span class="pill">admin</span>{% endif %}
+            {% if u.disabled %}<span class="pill off">disabled</span>{% endif %}
+            {% if u.locked %}<span class="pill off">locked</span>{% endif %}
+          </b>
+          <span class="row-sub">#{{ u.id }} · {{ u.email or 'no email' }} · {{ u.provider }}</span>
+          <span class="row-sub">Created {{ u.created.strftime('%b %d, %Y') if u.created else '-' }} · last sign-in {{ u.last_login.strftime('%b %d, %H:%M') if u.last_login else '-' }} UTC</span>
+        </div>
+        {% if not u.is_admin and not u.is_me %}
+        <div class="row-actions">
+          {% for what, label, cls in (('disable', 'Disable', 'btn-danger'), ('enable', 'Enable', 'btn-ghost'), ('unlock', 'Unlock', 'btn-ghost'), ('signout', 'Sign out', 'btn-ghost')) %}
+          {% if (what == 'disable' and not u.disabled) or (what == 'enable' and u.disabled) or (what == 'unlock' and u.locked) or what == 'signout' %}
+          <form method="post" action="{{ url_for('admin_user_action', uid=u.id, what=what) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn {{ cls }} btn-sm">{{ label }}</button>
+          </form>
+          {% endif %}
+          {% endfor %}
+        </div>
+        {% endif %}
+      </li>
+      {% else %}
+      <li class="row"><span class="row-sub">No users found.</span></li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <h2 class="sec-h">Recent security events</h2>
+  <section class="tile">
+    <form method="get" action="{{ url_for('admin') }}" class="inline-rename">
+      <input class="mini" name="event" value="{{ event }}" maxlength="40" placeholder="Event, e.g. login_failure" aria-label="Filter by event">
+      <button type="submit" class="btn btn-ghost btn-sm">Filter</button>
+    </form>
+    <ul class="rows">
+      {% for e in events %}
+      <li class="row">
+        <div class="row-main">
+          <b>{{ e.event }} <span class="pill {{ 'off' if e.level == 'INFO' else '' }}">{{ e.level }}</span></b>
+          <span class="row-sub">{{ e.at.strftime('%b %d, %H:%M:%S') }} UTC · user {{ e.user_id or '-' }} · {{ e.ip or '-' }}</span>
+          <span class="row-sub">{{ e.details }}</span>
+        </div>
+      </li>
+      {% else %}
+      <li class="row"><span class="row-sub">No events yet.</span></li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+{% endblock %}

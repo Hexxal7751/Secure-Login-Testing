@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Status - Secure Login Testing{% endblock %}
+{% block page %}dash{% endblock %}
+{% block content %}
+<div class="wrap">
+  <section class="card hero" data-tilt="2">
+    <div class="card-in stg">
+      <span class="badge"><i class="dot-live"></i>{{ 'All systems operational' if status == 'operational' else 'Service degraded' }}</span>
+      <h1 data-split>Service status</h1>
+      <p class="sub">Checked {{ checked_at_utc }} UTC · up for {{ (uptime_seconds // 3600) }}h {{ ((uptime_seconds % 3600) // 60) }}m since the last restart.</p>
+    </div>
+  </section>
+  <section class="tile">
+    <ul class="rows">
+      {% for label, ok in (('Website', checks.web), ('Database', checks.database), ('Email codes', checks.email), ('Google sign-in', checks.google_sign_in)) %}
+      <li class="row">
+        <div class="row-main"><b>{{ label }}</b></div>
+        <span class="pill {{ 'live' if ok else 'off' }}">{{ 'Operational' if ok else 'Unavailable' }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="sm">Monitors can poll <a href="{{ url_for('status_json') }}">/status.json</a>; it answers 503 when the database is down.</p>
+  </section>
+</div>
+{% endblock %}

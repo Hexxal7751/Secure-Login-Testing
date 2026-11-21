@@ -22,6 +22,14 @@ A Flask authentication demo with **username + password or Google sign-in**, **TO
 - **Security alert emails** for password resets and changes, email changes, new or removed passkeys, recovery-code use, Google linking and account deletion
 - **Signed-in devices and history**: device, approximate location and time of recent sign-ins, with "sign out" per device or everywhere else (sessions are revocable on the server)
 - **Link Google** to an existing account (or unlink it), safely
+- **Replace the authenticator app** (new or lost phone) with an emailed code
+- **Trusted devices**: skip the authenticator step on a device for 30 days (the passkey is always required); removable at any time
+- **New sign-in alerts**: an email when a sign-in comes from a new device or place
+- **Breached-password check** at sign-up, password reset and password change (Pwned Passwords, only a 5-character hash prefix is sent)
+- **Admin dashboard** (users, locked/disabled accounts, recent security events, disable/enable/unlock/sign out), protected by an extra authenticator check
+- **Download my data** as JSON, and a public **status page** (`/status`, `/status.json`)
+- **Light/dark theme** and a **language switch** (English, Spanish, French)
+- **Searchable logs**, automated tests and GitHub Actions
 - **Account deletion** that re-checks every factor (password or Google, email code, TOTP, passkey) and ends with a typed confirmation
 - **Rate limiting** and a temporary **account lockout** after repeated failed logins
 - **CSRF tokens** on every form and passkey request
@@ -86,8 +94,14 @@ ORIGIN=https://yourdomain.com
 GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-xxxx
 
-# Optional: set to off to stop looking up approximate locations of sign-ins (uses ipwho.is)
-# GEOIP=off
+# --- Optional settings -------------------------------------------------------
+# GEOIP=off                    stop looking up approximate sign-in locations (ipwho.is)
+# HIBP_CHECK=off               stop checking passwords against the Pwned Passwords service
+# REDIS_URL=redis://...        keep rate-limit counters across restarts (Render Key Value / Upstash)
+# CLIENT_IP_HEADER=            header that holds the real visitor IP (see /admin/network)
+# PROXY_HOPS=1                 or: how many proxies sit in front of the app
+# ADMIN_USERNAMES=you          comma-separated usernames that may open /admin
+# LOG_TO_FILE=1                also write logs/security.log
 
 # Email codes: choose ONE option
 # A) AgentMail (no domain needed)
@@ -136,12 +150,23 @@ Rate-limit counters are stored **in memory** (reset on restart, not shared betwe
 
 | Log message | Cause and fix |
 | --- | --- |
+| `SEC event=... request_id=...` | Normal security log lines. Search Render's logs for `event=login_failure`, `user_id=5` or a `request_id=`. |
+| Rate limits seem shared by everyone | Open **/admin/network** after signing in as an admin. If the detected IP isn't yours, set `CLIENT_IP_HEADER` (when `CF-Connecting-IP` shows your IP) or raise `PROXY_HOPS`. |
 | `FATAL: (ENOTFOUND) tenant/user ... not found` | `SUPABASE_URL` is wrong, or the Supabase project is paused. Restore the project, then copy a fresh pooler string from Supabase → Connect. |
 | `Google token endpoint returned 401 ... invalid_client` | `GOOGLE_CLIENT_SECRET` is wrong. Create a new secret in Google Cloud → Credentials → your Web client, copy it right away (35 characters starting `GOCSPX-`), paste it with no quotes or spaces. |
 | `redirect_uri_mismatch` | The redirect URI in Google Cloud must be exactly `<ORIGIN>/auth/google/callback`. |
 | `Email provider rejected the message` | Check the email API key and inbox/sender in `.env`, and the provider's sending limits. |
 
 The app prints a configuration warning at startup (without showing any secret) when it spots an obvious mistake.
+
+## 🧪 Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The tests use an in-memory database and mocked email, so they need no accounts or network. GitHub Actions runs them on every push (`.github/workflows/tests.yml`). They also check that no Python file is cut off or larger than 90,000 characters, that every template link points to a real route, and that no name is undefined.
 
 ## 🗂️ Project structure
 
@@ -151,6 +176,12 @@ core.py                     Config, database, email, sessions, helpers shared by
 routes_auth.py              Login, register, Google, passkeys, TOTP, dashboard
 routes_account.py           Account hub, deletion, password reset, recovery codes, changes
 routes_misc.py              Logout and error pages
+routes_admin.py             Admin pages, network check, public status page
+i18n.py                     Language switch engine
+translations_es.py          Spanish texts
+translations_fr.py          French texts
+tests/                      Automated tests (pytest) and the helpers they use
+.github/workflows/          GitHub Actions workflow that runs the tests
 security_middleware.py      Input validation helpers (validate_email is used by app.py)
 security_logging.py         Security event logging
 supabase_rls_policies.sql   Tables and Row-Level Security policies

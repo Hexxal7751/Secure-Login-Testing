@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, otp_form %}
+{% block title %}Replace authenticator - Secure Login Testing{% endblock %}
+{% block header_actions %}
+<a class="btn btn-ghost btn-sm" href="{{ url_for('account') }}">{{ icon('back') }}<span>Account</span></a>
+{% endblock %}
+{% block content %}
+{% if stage == 'scan' %}
+<div class="auth wide">
+  <section class="card" data-tilt="2">
+    <div class="card-in">
+      <div class="split">
+        <div class="stg">
+          <div class="qr">
+            <i></i><i></i><i></i><i></i>
+            {% if qr_code %}<img src="{{ qr_code }}" alt="QR code for your authenticator app" width="204" height="204">{% endif %}
+          </div>
+        </div>
+        <div class="stg">
+          <h1 data-split>Scan the new code</h1>
+          <ol class="steps-l">
+            <li><b>1</b><span>Open your authenticator app and scan this QR code. It replaces the old entry.</span></li>
+            <li><b>2</b><span>Enter the 6-digit code the app shows to confirm.</span></li>
+          </ol>
+          {% if secret_key %}
+          <div class="secret" title="Can’t scan? Use this key instead.">
+            <div><div class="lbl">Can’t scan? Click to reveal the key</div><code id="secret-key">{{ secret_key }}</code></div>
+            <button type="button" class="copy" data-copy="#secret-key">{{ icon('copy') }}<span>Copy</span></button>
+          </div>
+          {% endif %}
+          {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
+          {{ otp_form(url_for('replace_authenticator'), csrf_token, error, 'Confirm and replace', do='confirm') }}
+          <div class="divider"><a class="linkbtn" href="{{ url_for('account') }}">Cancel</a></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+{% else %}
+<div class="auth">
+  <section class="card" data-tilt="4">
+    <div class="card-in stg">
+      <div class="hero-ic">{{ icon('phone') }}</div>
+      <h1 data-split>Replace authenticator</h1>
+      <p class="sub">First we confirm it’s you with a code sent to <strong>{{ masked_email }}</strong>.</p>
+      {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
+      {% if stage == 'send' %}
+      <form method="post" action="{{ url_for('replace_authenticator') }}" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="do" value="send">
+        <button type="submit" class="btn btn-primary btn-block">{{ icon('mail') }}<span>Send code</span></button>
+      </form>
+      {% else %}
+      {{ otp_form(url_for('replace_authenticator'), csrf_token, error, 'Verify code', do='verify') }}
+      <div class="divider">
+        <form method="post" action="{{ url_for('replace_authenticator') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="do" value="send">
+          <button type="submit" class="linkbtn">Resend code</button>
+        </form>
+      </div>
+      {% endif %}
+      <div class="divider"><a class="linkbtn" href="{{ url_for('account') }}">Cancel</a></div>
+    </div>
+  </section>
+</div>
+{% endif %}
+{% endblock %}

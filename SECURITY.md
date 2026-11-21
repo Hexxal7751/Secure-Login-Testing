@@ -25,6 +25,17 @@ This document describes what the application actually implements, and what it do
 - Security alert emails go to the account's email for: password reset/change, email change (old and new address), new or removed passkey, recovery-code use or regeneration, Google linking/unlinking, signing out other devices, account deletion
 - Approximate locations come from a third-party IP lookup (ipwho.is); set `GEOIP=off` to disable it. The IP is read from proxy headers and is best-effort
 
+### Trusted devices
+- After a successful authenticator code you may tick "Trust this device for 30 days". A random token goes in an HttpOnly cookie; only its HMAC is stored
+- A trusted device skips the authenticator step only; the passkey is always required
+- Removed automatically on password change/reset, authenticator replacement, "sign out other devices" and when an admin disables the account
+
+### Alerts, breached passwords and the admin area
+- New sign-ins from an unseen device or place email the owner (best-effort; places need the optional IP lookup)
+- Passwords are checked with the Pwned Passwords range API: only the first 5 characters of the SHA-1 are sent, and the check is skipped (fails open) if the service is unreachable
+- Admins are the usernames in `ADMIN_USERNAMES`. They must be fully signed in and re-enter an authenticator code every 15 minutes; admins can't be disabled from the admin page
+- Security events are stored in the database (shown to admins, included in a user's own data export) and written as searchable log lines
+
 ### Recovery codes
 - 8 random codes (10 characters from a no-look-alike alphabet), shown once and stored only as HMAC hashes; each works once
 - A code replaces one factor (authenticator or passkey) and is rate-limited; 5 wrong tries end the session
@@ -77,7 +88,7 @@ The CSP allows only same-origin resources plus `cdn.jsdelivr.net`, Google Fonts 
 - Alert emails are sent in the background and are best-effort; they depend on your email provider's limits.
 - A recovery code is a standalone bypass of one factor: anyone who has your password and a recovery code gets past that factor. Store them like passwords.
 
-- Rate-limit counters live in memory: they reset on restart and are not shared across workers (use Redis for multi-worker setups).
+- Rate-limit counters live in memory unless `REDIS_URL` is set. Counters are per visitor IP; the IP comes from proxy headers, so verify it at `/admin/network` (wrong `CLIENT_IP_HEADER`/`PROXY_HOPS` settings can let a visitor fake their IP).
 - Google's ID token is trusted without a signature check because it is received directly from Google over HTTPS with the client secret (as Google documents).
 - The re-confirmation of a Google account for deletion checks the same Google account is chosen; it does not force Google to ask for the password again.
 - Free email plans cap recipients and volume; codes can fail to send if the provider limit is reached.

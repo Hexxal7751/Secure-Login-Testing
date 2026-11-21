@@ -35,7 +35,7 @@
 
 {# 6-box code entry. Fills the hidden input name="totp_code" the backend expects.
    step / do are optional hidden fields (used by the account-deletion and email pages). #}
-{% macro otp_form(action, csrf, error, button, step='', do='') %}
+{% macro otp_form(action, csrf, error, button, step='', do='', trust=False) %}
 <form method="post" action="{{ action }}" novalidate>
   <input type="hidden" name="csrf_token" value="{{ csrf }}">
   {% if step %}<input type="hidden" name="step" value="{{ step }}">{% endif %}
@@ -45,6 +45,7 @@
       {% for i in range(6) %}<input type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="{{ 'one-time-code' if loop.first else 'off' }}" aria-label="Digit {{ i + 1 }}">{% endfor %}
     </div>
     <input type="hidden" name="totp_code" value="">
+    {% if trust %}<label class="check"><input type="checkbox" name="trust" value="1"><span>Trust this device for 30 days</span></label>{% endif %}
     <button type="submit" class="btn btn-primary btn-block">{{ icon('shield-check') }}<span>{{ button }}</span></button>
   </div>
 </form>

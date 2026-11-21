@@ -46,6 +46,11 @@ def login():
             else:
                 stored = user.get("password") if user else None
                 matches = bcrypt.checkpw(password, (stored or DUMMY_HASH).encode("utf-8"))
+                if user and stored and matches and user.get("disabled"):
+                    log_event("login_blocked_disabled", {"user_id": user["id"]}, "WARNING")
+                    return render_template("login.html", csrf_token=generate_csrf_token(),
+                                           error="This account has been disabled. Contact the administrator.",
+                                           google_enabled=bool(GOOGLE_CLIENT_ID))
                 if user and stored and matches:
                     start_login_session(user, "password")
                     log_event("login_success", {"user_id": user["id"], "method": "password"})
@@ -91,6 +96,8 @@ def register():
                 error = "Password must be at least 8 characters long!"
             elif len(password) > 72:
                 error = "Password must be 72 bytes or fewer."
+            elif password_breached(password):
+                error = BREACH_MESSAGE
             else:
                 # Free usernames held by registrations that were never finished
                 try:
@@ -326,6 +333,10 @@ def google_callback():
 
     # --- Sign in / sign up ---------------------------------------------------
     user = get_user_by_google_sub(sub)
+    if user and user.get("disabled"):
+        log_event("login_blocked_disabled", {"user_id": user["id"]}, "WARNING")
+        flash("This account has been disabled. Contact the administrator.", "error")
+        return redirect(url_for("login"))
     if user:
         start_login_session(user, "google")
         log_event("login_success", {"user_id": user["id"], "method": "google"})
@@ -599,13 +610,7 @@ def setup_totp():
         return page("Invalid code. Please try again.")
 
     secret = pyotp.random_base32()
-    uri = pyotp.TOTP(secret).provisioning_uri(name=user["username"], issuer_name="Secure Login Testing")
-    qr = qrcode.QRCode(version=1, box_size=10, border=5)
-    qr.add_data(uri)
-    qr.make(fit=True)
-    buffered = BytesIO()
-    qr.make_image(fill_color="black", back_color="white").save(buffered, format="PNG")
-    session["temp_qr_code"] = "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode()
+    session["temp_qr_code"] = make_totp_qr(secret, user["username"])
     session["temp_secret"] = secret
     return page()
 
@@ -643,6 +648,10 @@ def verify_totp_page():
         flash("2FA setup is required!", "error")
         return redirect(url_for("setup_totp"))
 
+    if request.method == "GET" and trusted_device_valid(user["id"]):
+        session["2fa_verified"] = True          # trusted device: the passkey is still required
+        return redirect(url_for("verify_passkey_page"))
+
     if request.method == "POST":
         if not validate_csrf_token():
             error = "Invalid request. Please try again."
@@ -652,7 +661,11 @@ def verify_totp_page():
                 error = "Please enter a valid 6-digit code"
             elif verify_totp(user["secret"], totp_code):
                 session["2fa_verified"] = True
-                return redirect(url_for("verify_passkey_page"))
+                response = make_response(redirect(url_for("verify_passkey_page")))
+                if request.form.get("trust") == "1":
+                    set_trust_cookie(response, create_trusted_device(user["id"]))
+                    log_event("trusted_device_added", {"user_id": user["id"]})
+                return response
             else:
                 error = "Invalid 2FA code! Please try again."
 

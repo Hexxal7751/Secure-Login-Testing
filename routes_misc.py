@@ -1,5 +1,8 @@
 """Logout and error pages."""
 from core import *  # noqa: F401,F403  (shared app, helpers and imports)
+from i18n import LANGUAGES, init_i18n
+
+init_i18n(app)
 
 
 # ---------------------------------------------------------------------------
@@ -92,5 +95,20 @@ def handle_any_exception(e):
         return render_error(e.code or 500, e.get_headers())
     app.logger.exception("Unhandled exception")
     return render_error(500)
+
+
+@app.route("/lang/<code>")
+def set_language(code):
+    """Remember the visitor's language (cookie), then go back to where they were."""
+    if code not in LANGUAGES:
+        abort(404)
+    nxt = request.args.get("next", "/")
+    if not nxt.startswith("/") or nxt.startswith("//") or "\\" in nxt:
+        nxt = "/"
+    response = redirect(nxt)
+    response.set_cookie("lang", code, max_age=31536000, httponly=True, samesite="Lax",
+                        secure=app.config["SESSION_COOKIE_SECURE"])
+    return response
+
 
 # END OF routes_misc.py

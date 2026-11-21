@@ -279,6 +279,8 @@ def reset_password():
                 error = "Password must be 72 bytes or fewer."
             elif password != confirm:
                 error = "The two passwords don't match."
+            elif password_breached(password):
+                error = BREACH_MESSAGE
             else:
                 user = get_user_by_verified_email(flow["email"])
                 ok = False
@@ -294,6 +296,7 @@ def reset_password():
                     )
                     log_event("password_reset_done", {"user_id": user["id"]}, "WARNING")
                     revoke_other_sessions(user["id"])
+                    revoke_trusted_devices(user["id"])
                     send_alert(user.get("email"), "Password reset",
                                "Your password was reset with an emailed code. All devices were signed out.")
                     session.clear()
@@ -351,6 +354,8 @@ def account():
         recovery_left=count_recovery_codes(user["id"]),
         sessions=sessions,
         other_active=sum(1 for x in sessions if x["active"] and not x["current"]),
+        trusted=list_trusted_devices(user["id"]),
+        is_admin=is_admin_user(user),
         csrf_token=generate_csrf_token(),
     )
 
@@ -386,6 +391,7 @@ def sessions_signout_others():
     if not user:
         return redirect(url_for("login"))
     count = revoke_other_sessions(user["id"], session.get("sid"))
+    revoke_trusted_devices(user["id"])
     if count:
         send_alert(user.get("email"), "Signed out of other devices",
                    f"{count} other device(s) were signed out of your account.")
@@ -545,6 +551,145 @@ def google_unlink():
     return redirect(url_for("account"))
 
 
+# ----- trusted devices -------------------------------------------------------
+@app.route("/account/trusted/revoke", methods=["POST"])
+@login_required
+@two_factor_required
+@passkey_verified_required
+def trusted_revoke():
+    if not validate_csrf_token():
+        flash("Invalid request. Please try again.", "error")
+    elif request.form.get("all") == "1":
+        revoke_trusted_devices(session["user_id"])
+        flash("All trusted devices were removed.", "success")
+    else:
+        revoke_trusted_devices(session["user_id"], request.form.get("id", type=int))
+        flash("Trusted device removed.", "success")
+    return redirect(url_for("account"))
+
+
+# ----- replace the authenticator app (new phone, lost phone) ---------------------
+@app.route("/account/replace-authenticator", methods=["GET", "POST"])
+@login_required
+@two_factor_required
+@passkey_verified_required
+@limiter.limit("30 per hour", methods=["POST"])
+def replace_authenticator():
+    user = acct_user()
+    if not user:
+        return redirect(url_for("login"))
+    if not user.get("email") or not user.get("email_verified"):
+        flash("Replacing the authenticator needs a verified email. Add one in Change email first.", "warning")
+        return redirect(url_for("account"))
+
+    a = get_act("totp", user["id"])
+    if a is None or (request.method == "GET" and request.args.get("restart")):
+        a = start_act("totp", user["id"], "send")
+    error = None
+
+    if request.method == "POST":
+        do = request.form.get("do")
+        if not validate_csrf_token():
+            error = "Invalid request. Please try again."
+        elif do == "send" and a["stage"] in ("send", "code"):
+            ok, msg = issue_email_code(user["id"], "chgtotp", user["email"])
+            if ok:
+                a["stage"] = "code"
+                save_act(a)
+            flash("Code sent. Check your inbox." if ok else msg, "success" if ok else "error")
+            return redirect(url_for("replace_authenticator"))
+        elif do == "verify" and a["stage"] == "code":
+            code = request.form.get("totp_code", "")
+            if not TOTP_REGEX.match(code):
+                error = "Please enter a valid 6-digit code"
+            else:
+                ok, msg, sent_to = check_email_code(user["id"], "chgtotp", code)
+                if ok and sent_to == user["email"]:
+                    a["stage"], a["secret"] = "scan", pyotp.random_base32()
+                    save_act(a)
+                    return redirect(url_for("replace_authenticator"))
+                a["fails"] += 1
+                error = msg or "Incorrect code. Please try again."
+        elif do == "confirm" and a["stage"] == "scan":
+            code = request.form.get("totp_code", "")
+            if not TOTP_REGEX.match(code):
+                error = "Please enter a valid 6-digit code"
+            elif verify_totp(a.get("secret"), code):
+                db_run("UPDATE users SET secret = %s WHERE id = %s", (a["secret"], user["id"]), admin=True)
+                revoke_other_sessions(user["id"], session.get("sid"))
+                revoke_trusted_devices(user["id"])
+                send_alert(user["email"], "Authenticator app replaced",
+                           "The authenticator app on your account was replaced. Other devices were signed out.")
+                log_event("totp_replaced", {"user_id": user["id"]}, "WARNING")
+                session.pop("act", None)
+                flash("Authenticator replaced. Other devices were signed out.", "success")
+                return redirect(url_for("account"))
+            else:
+                a["fails"] += 1
+                error = "Invalid 2FA code! Please try again."
+        else:
+            error = "That step isn't available right now."
+        if a["fails"] >= 5:
+            return _act_abort("Too many wrong attempts. The change was cancelled.")
+        save_act(a)
+
+    qr = secret = None
+    if a["stage"] == "scan" and a.get("secret"):
+        secret, qr = a["secret"], make_totp_qr(a["secret"], user["username"])
+    return render_template("replace_authenticator.html", stage=a["stage"], error=error,
+                           masked_email=mask_email(user["email"]), qr_code=qr, secret_key=secret,
+                           csrf_token=generate_csrf_token())
+
+
+# ----- download my data ----------------------------------------------------------------
+@app.route("/account/export", methods=["POST"])
+@login_required
+@two_factor_required
+@passkey_verified_required
+@limiter.limit("5 per hour", methods=["POST"])
+def export_data():
+    user = acct_user()
+    if not user:
+        return redirect(url_for("login"))
+    if not validate_csrf_token():
+        flash("Invalid request. Please try again.", "error")
+        return redirect(url_for("account"))
+    uid = user["id"]
+
+    def iso(value):
+        return value.isoformat() if hasattr(value, "isoformat") else value
+
+    data = {
+        "exported_at_utc": iso(utcnow()),
+        "profile": {
+            "username": user["username"], "email": user.get("email"),
+            "email_verified": bool(user.get("email_verified")),
+            "sign_in_method": user.get("auth_provider"), "has_password": bool(user.get("password")),
+            "google_linked": bool(user.get("google_sub")), "created_at": iso(user.get("created_at")),
+            "last_login": iso(user.get("last_login")),
+        },
+        "passkeys": [{"name": p.get("name"), "added": iso(p.get("created_at")), "last_used": iso(p.get("last_used_at"))}
+                     for p in get_user_passkeys(uid)],
+        "recovery_codes_unused": count_recovery_codes(uid),
+        "trusted_devices": [{"device": t["device"], "ip": t["ip"], "added": iso(t["created_at"]),
+                             "expires": iso(t["expires_at"])} for t in list_trusted_devices(uid)],
+        "sign_ins": [{"device": r["device"], "ip": r["ip"], "location": r["location"], "method": r["method"],
+                      "signed_in": iso(r["created_at"]), "last_seen": iso(r["last_seen"]), "ended": iso(r["ended_at"])}
+                     for r in (db_run("SELECT * FROM user_sessions WHERE user_id = %s AND completed = TRUE "
+                                      "ORDER BY created_at DESC LIMIT 100", (uid,), fetch="all", admin=True) or [])],
+        "security_events": [{"at": iso(r["at"]), "event": r["event"], "ip": r["ip"]}
+                            for r in (db_run("SELECT at, event, ip FROM security_events WHERE user_id = %s "
+                                             "ORDER BY id DESC LIMIT 100", (uid,), fetch="all", admin=True) or [])],
+        "note": "Password hashes, authenticator secrets and recovery code hashes are never included.",
+    }
+    send_alert(user.get("email"), "Your data was downloaded", "A copy of your account data was downloaded.")
+    log_event("data_exported", {"user_id": uid})
+    response = make_response(json.dumps(data, indent=2, default=str))
+    response.headers["Content-Type"] = "application/json; charset=utf-8"
+    response.headers["Content-Disposition"] = f'attachment; filename="{user["username"]}-account-data.json"'
+    return response
+
+
 # ----- change password / change email (both need an emailed code) ----------
 def get_act(kind, uid):
     a = session.get("act")
@@ -631,10 +776,13 @@ def change_password():
                 error = "The two passwords don't match."
             elif new == current:
                 error = "Choose a password you haven't used here before."
+            elif password_breached(new):
+                error = BREACH_MESSAGE
             else:
                 hashed = bcrypt.hashpw(new, bcrypt.gensalt()).decode("utf-8")
                 db_run("UPDATE users SET password = %s WHERE id = %s", (hashed, user["id"]), admin=True)
                 revoke_other_sessions(user["id"], session.get("sid"))
+                revoke_trusted_devices(user["id"])
                 send_alert(user["email"], "Password changed",
                            "Your password was changed. Other devices were signed out.")
                 log_event("password_changed", {"user_id": user["id"]}, "WARNING")

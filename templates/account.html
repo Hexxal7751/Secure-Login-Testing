@@ -16,6 +16,7 @@
       <div class="meta">
         {% if masked_email %}<span class="meta-i">{{ icon('mail') }}{{ masked_email }}</span>{% endif %}
         <span class="meta-i">{{ icon('shield-check') }}{{ 'Password' if has_password else 'Google' }}{{ ' + Google' if has_password and google_linked else '' }}</span>
+        {% if is_admin %}<a class="meta-i" href="{{ url_for('admin') }}">{{ icon('activity') }}Admin</a>{% endif %}
       </div>
     </div>
   </section>
@@ -57,6 +58,12 @@
         <button type="submit" class="btn btn-ghost btn-sm">{{ icon('key') }}<span>{{ 'Generate new codes' if recovery_left else 'Generate codes' }}</span></button>
       </form>
       <p class="sm">Generating new codes cancels the old ones.</p>
+    </article>
+
+    <article class="tile reveal" data-tilt="7">
+      <h3>{{ icon('phone') }}Authenticator app</h3>
+      <p class="sm">New phone, or lost the old one? Replace the app with an emailed code. Other devices are signed out.</p>
+      <a class="btn btn-ghost btn-sm" href="{{ url_for('replace_authenticator', restart=1) }}">{{ icon('phone') }}<span>Replace authenticator</span></a>
     </article>
 
     <article class="tile reveal" data-tilt="7">
@@ -109,6 +116,43 @@
     </form>
     {% endif %}
     <p class="sm">Locations are approximate and based on the IP address. History is kept for 90 days.</p>
+  </section>
+
+  <h2 class="sec-h reveal">Trusted devices</h2>
+  <section class="tile reveal">
+    {% if trusted %}
+    <ul class="rows">
+      {% for t in trusted %}
+      <li class="row">
+        <div class="row-main">
+          <b>{{ t.device or 'Device' }}</b>
+          <span class="row-sub">{{ t.ip }} · skips the authenticator step until {{ t.expires_at.strftime('%b %d, %Y') }}</span>
+        </div>
+        <form method="post" action="{{ url_for('trusted_revoke') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="id" value="{{ t.id }}">
+          <button type="submit" class="btn btn-ghost btn-sm">Remove</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    <form method="post" action="{{ url_for('trusted_revoke') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="all" value="1">
+      <button type="submit" class="btn btn-ghost btn-sm">Remove all trusted devices</button>
+    </form>
+    {% else %}
+    <p class="sm">No trusted devices. Tick “Trust this device for 30 days” when you enter your authenticator code to skip that step next time. The passkey is always required.</p>
+    {% endif %}
+  </section>
+
+  <section class="tile reveal">
+    <h3>{{ icon('database') }}Your data</h3>
+    <p class="sm">Download a copy of your account details, passkey names and sign-in history as a JSON file. Secrets and hashes are never included.</p>
+    <form method="post" action="{{ url_for('export_data') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-ghost btn-sm">{{ icon('database') }}<span>Download my data</span></button>
+    </form>
   </section>
 
   <section class="tile reveal">

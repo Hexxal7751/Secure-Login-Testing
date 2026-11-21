@@ -56,7 +56,24 @@ from security_middleware import validate_email
 load_dotenv()
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s request_id=%(request_id)s %(message)s",
+)
+
+
+class _RequestIdFilter(logging.Filter):
+    """Adds request_id=<id> to every log line so one request can be searched in Render."""
+    def filter(self, record):
+        try:
+            record.request_id = g.get("request_id", "-") if has_request_context() else "-"
+        except Exception:
+            record.request_id = "-"
+        return True
+
+
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_RequestIdFilter())
 app.secret_key = os.getenv("FLASK_PASS")
 
 # Trust proxy headers (needed on Render)
@@ -110,6 +127,13 @@ RESET_TTL = timedelta(minutes=15)
 ACT_TTL = timedelta(minutes=10)
 SESSION_IDLE = timedelta(minutes=30)
 
+CLIENT_IP_HEADER = _clean_env(os.getenv("CLIENT_IP_HEADER"))   # e.g. CF-Connecting-IP (optional)
+try:
+    PROXY_HOPS = max(1, int(os.getenv("PROXY_HOPS", "1")))        # proxies between the internet and the app
+except ValueError:
+    PROXY_HOPS = 1
+
+
 def check_config():
     """Log obvious configuration mistakes at startup (values are never printed)."""
     if not os.getenv("FLASK_PASS"):
@@ -117,6 +141,9 @@ def check_config():
     url = os.getenv("SUPABASE_URL") or ""
     if not url.startswith(("postgresql://", "postgres://")):
         app.logger.error("SUPABASE_URL is missing or doesn't start with postgresql://")
+    if os.getenv("FLASK_ENV") == "production" and not (CLIENT_IP_HEADER or os.getenv("PROXY_HOPS")):
+        app.logger.warning("Client IP detection uses the default (last X-Forwarded-For entry). "
+                           "Open /admin/network after signing in to check it shows YOUR IP.")
     if GOOGLE_CLIENT_ID and not GOOGLE_CLIENT_ID.endswith(".apps.googleusercontent.com"):
         app.logger.warning("GOOGLE_CLIENT_ID doesn't end with .apps.googleusercontent.com")
     if GOOGLE_CLIENT_ID and not (GOOGLE_CLIENT_SECRET.startswith("GOCSPX-") and len(GOOGLE_CLIENT_SECRET) == 35):
@@ -128,12 +155,26 @@ def check_config():
 # ---------------------------------------------------------------------------
 # Rate limiting
 # ---------------------------------------------------------------------------
+def rate_key():
+    """Rate-limit counters are per visitor IP (see client_ip), not per Render proxy."""
+    try:
+        return client_ip() or get_remote_address()
+    except Exception:
+        return get_remote_address()
+
+
+# REDIS_URL keeps the counters across restarts and workers (Render Key Value or Upstash).
+# Without it the counters live in memory. If Redis is down the limiter falls back to memory.
+REDIS_URL = _clean_env(os.getenv("REDIS_URL"))
+app.config["RATELIMIT_ENABLED"] = os.getenv("RATELIMIT_ENABLED", "true").strip().lower() != "false"
 limiter = Limiter(
-    key_func=get_remote_address,
+    key_func=rate_key,
     app=app,
     default_limits=["2000 per day", "300 per hour"],
-    storage_uri="memory://",
+    storage_uri=REDIS_URL or "memory://",
     strategy="fixed-window",
+    swallow_errors=True,
+    in_memory_fallback_enabled=bool(REDIS_URL),
 )
 
 login_limit = "5 per minute; 20 per hour"
@@ -165,11 +206,24 @@ def mask_email(email):
 
 
 def log_event(event_type, details=None, level="INFO"):
-    """Security logging must never break a request."""
+    """Security logging must never break a request. Goes to the logs and to the admin event list."""
+    details = details or {}
     try:
-        log_security_event(event_type, details or {}, level)
+        log_security_event(event_type, details, level)
     except Exception:
         app.logger.exception("security log failed")
+    try:
+        uid = details.get("user_id")
+        ip = ""
+        if has_request_context():
+            uid = uid or session.get("user_id")
+            ip = client_ip()
+        row = (utcnow(), event_type, level, uid, ip, json.dumps(details, default=str)[:900])
+        run_async(lambda: db_run(
+            "INSERT INTO security_events (at, event, level, user_id, ip, details) VALUES (%s, %s, %s, %s, %s, %s)",
+            row, admin=True))
+    except Exception:
+        app.logger.exception("security event store failed")
 
 
 def get_nonce():
@@ -181,6 +235,7 @@ def get_nonce():
 @app.before_request
 def before_request():
     get_nonce()
+    g.request_id = secrets.token_hex(4)
 
 
 @app.context_processor
@@ -213,6 +268,7 @@ def add_security_headers(response):
         "object-src 'none'; "
         "base-uri 'self'"
     )
+    response.headers["X-Request-ID"] = g.get("request_id", "-")
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
@@ -396,6 +452,28 @@ def create_users_table():
                 ended_at TIMESTAMP
             )""",
             "CREATE INDEX IF NOT EXISTS user_sessions_user_idx ON user_sessions (user_id, created_at)",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled BOOLEAN DEFAULT FALSE",
+            """CREATE TABLE IF NOT EXISTS trusted_devices (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                token_hash TEXT NOT NULL UNIQUE,
+                device TEXT,
+                ip TEXT,
+                created_at TIMESTAMP NOT NULL,
+                last_used TIMESTAMP,
+                expires_at TIMESTAMP NOT NULL
+            )""",
+            "CREATE INDEX IF NOT EXISTS trusted_devices_user_idx ON trusted_devices (user_id)",
+            """CREATE TABLE IF NOT EXISTS security_events (
+                id SERIAL PRIMARY KEY,
+                at TIMESTAMP NOT NULL,
+                event TEXT NOT NULL,
+                level VARCHAR(10),
+                user_id INTEGER,
+                ip TEXT,
+                details TEXT
+            )""",
+            "CREATE INDEX IF NOT EXISTS security_events_at_idx ON security_events (at)",
         ]
         for sql in statements:
             try:
@@ -421,7 +499,8 @@ def init_db():
 
 # Runs under gunicorn too (the old code only ran this under `python app.py`)
 check_config()
-init_db()
+if not os.getenv("SKIP_DB_INIT"):      # tests set this so no database is needed
+    init_db()
 
 
 def get_user(username):
@@ -474,6 +553,7 @@ def delete_user_everything(user_id):
         ("DELETE FROM email_codes WHERE user_id = %s", (user_id,)),
         ("DELETE FROM recovery_codes WHERE user_id = %s", (user_id,)),
         ("DELETE FROM user_sessions WHERE user_id = %s", (user_id,)),
+        ("DELETE FROM trusted_devices WHERE user_id = %s", (user_id,)),
         ("DELETE FROM passkeys WHERE user_id = %s", (user_id,)),
         ("DELETE FROM users WHERE id = %s", (user_id,)),
     ])
@@ -580,7 +660,8 @@ def issue_email_code(user_id, purpose, email):
             "reset": "reset your password",
             "chgpw": "change your password",
             "chgemail_old": "change your email address",
-            "chgemail_new": "confirm your new email address"}.get(purpose, "continue")
+            "chgemail_new": "confirm your new email address",
+            "chgtotp": "replace your authenticator app"}.get(purpose, "continue")
     ok = send_email(
         email,
         f"Your Secure Login Testing code: {shown}",
@@ -619,10 +700,23 @@ def check_email_code(user_id, purpose, code):
 # Auth flow helpers
 # ---------------------------------------------------------------------------
 def client_ip():
-    """Best-effort visitor IP behind Render's proxy (for display and alerts only)."""
-    ip = (request.headers.get("CF-Connecting-IP")
-          or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-          or request.remote_addr or "")
+    """The visitor's IP behind Render's proxies.
+
+    1) CLIENT_IP_HEADER, if you set one; 2) the PROXY_HOPS-th entry counted from the RIGHT of
+    X-Forwarded-For (entries added by your own proxies cannot be faked by the visitor);
+    3) the socket address. Check what your deployment shows at /admin/network.
+    """
+    ip = ""
+    if CLIENT_IP_HEADER:
+        ip = request.headers.get(CLIENT_IP_HEADER, "").split(",")[0].strip()
+    if not ip:
+        parts = [p.strip() for p in request.headers.get("X-Forwarded-For", "").split(",") if p.strip()]
+        if parts:
+            ip = parts[-PROXY_HOPS] if len(parts) >= PROXY_HOPS else parts[0]
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        ip = request.remote_addr or ""
     return ip[:64]
 
 
@@ -660,10 +754,24 @@ def device_label(ua):
     return f"{browser} on {system}" if system else browser
 
 
+_GEO_CACHE = {}
+
+
 def geo_lookup(ip):
-    """Rough 'City, Country' for an IP via ipwho.is. Set GEOIP=off to disable."""
+    """Rough 'City, Country' for an IP via ipwho.is (cached for an hour). Set GEOIP=off to disable."""
     if os.getenv("GEOIP", "on").strip().lower() in ("off", "0", "false", "no"):
         return None
+    hit = _GEO_CACHE.get(ip)
+    if hit and (utcnow() - hit[1]) < timedelta(hours=1):
+        return hit[0]
+    place = _geo_fetch(ip)
+    _GEO_CACHE[ip] = (place, utcnow())
+    if len(_GEO_CACHE) > 500:
+        _GEO_CACHE.clear()
+    return place
+
+
+def _geo_fetch(ip):
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
@@ -867,6 +975,34 @@ def finish_signin(user):
     except Exception:
         app.logger.exception("could not finish sign-in bookkeeping")
     link_pending_google(user)
+    sid, ip = session.get("sid"), client_ip()
+    device = device_label(request.headers.get("User-Agent"))
+    run_async(lambda: check_new_signin(user["id"], user.get("email"), sid, device, ip))
+
+
+def check_new_signin(user_id, email, sid, device, ip):
+    """Email the owner when a sign-in comes from a device or place not seen in the last 90 days."""
+    try:
+        place = geo_lookup(ip)
+        if place:
+            db_run("UPDATE user_sessions SET location = %s WHERE id = %s AND (location IS NULL OR location = '')",
+                   (place, sid), admin=True)
+        prev = db_run(
+            "SELECT device, location FROM user_sessions WHERE user_id = %s AND completed = TRUE "
+            "AND id <> %s AND created_at > %s", (user_id, sid, utcnow() - timedelta(days=90)),
+            fetch="all", admin=True) or []
+        if not prev or not email:
+            return                                  # first ever sign-in, or no email to warn
+        new_device = all(p["device"] != device for p in prev)
+        known_places = {p["location"] for p in prev if p["location"]}
+        new_place = bool(place) and place != "Local network" and bool(known_places) and place not in known_places
+        if new_device or new_place:
+            where = f" from {place}" if place else ""
+            send_alert(email, "New sign-in to your account",
+                       f"Your account was just signed in to with {device}{where} (IP {ip}).")
+            log_event("new_signin_alert", {"user_id": user_id, "device": device, "place": place or ""}, "WARNING")
+    except Exception:
+        app.logger.exception("new sign-in check failed")
 
 
 def next_step(user):
@@ -980,6 +1116,126 @@ def _verify_assertion(data, passkey, challenge_b64, require_uv=False):
 # ---------------------------------------------------------------------------
 # Account deletion (every factor + typed confirmation)
 # ---------------------------------------------------------------------------
+# ----- breached passwords (Pwned Passwords k-anonymity API) ------------------
+BREACH_MESSAGE = "That password has appeared in a known data breach. Please choose a different one."
+
+
+def password_breached(raw):
+    """True if the password is in the Pwned Passwords list. Only the first 5 characters of its
+    SHA-1 are sent, never the password. Fails open (False) if the service can't be reached."""
+    if os.getenv("HIBP_CHECK", "on").strip().lower() in ("off", "0", "false", "no"):
+        return False
+    sha = hashlib.sha1(raw, usedforsecurity=False).hexdigest().upper()
+    prefix, suffix = sha[:5], sha[5:]
+    try:
+        req = urllib.request.Request(f"https://api.pwnedpasswords.com/range/{prefix}",
+                                     headers={"User-Agent": HTTP_UA, "Add-Padding": "true"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            body = resp.read().decode("utf-8")
+    except Exception as e:
+        app.logger.warning("Breach check unavailable: %s", e)
+        return False
+    for line in body.splitlines():
+        h, _, count = line.partition(":")
+        if h.strip() == suffix:
+            return int(count.strip() or 0) > 0
+    return False
+
+
+# ----- trusted devices (skip the authenticator step for 30 days) ---------------
+TRUST_DAYS = 30
+TRUST_COOKIE = "td"
+
+
+def _trust_hash(token):
+    return hmac.new((app.secret_key or "").encode("utf-8"), f"trust:{token}".encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def create_trusted_device(user_id):
+    token = secrets.token_urlsafe(32)
+    now = utcnow()
+    ua = request.headers.get("User-Agent") or ""
+    db_run("INSERT INTO trusted_devices (user_id, token_hash, device, ip, created_at, last_used, expires_at) "
+           "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+           (user_id, _trust_hash(token), device_label(ua), client_ip(), now, now, now + timedelta(days=TRUST_DAYS)),
+           admin=True)
+    return token
+
+
+def trusted_device_valid(user_id):
+    token = request.cookies.get(TRUST_COOKIE)
+    if not token:
+        return False
+    row = db_run("SELECT id FROM trusted_devices WHERE user_id = %s AND token_hash = %s AND expires_at > %s",
+                 (user_id, _trust_hash(token), utcnow()), fetch="one", admin=True)
+    if row:
+        db_run("UPDATE trusted_devices SET last_used = %s WHERE id = %s", (utcnow(), row["id"]), admin=True)
+    return bool(row)
+
+
+def set_trust_cookie(response, token):
+    response.set_cookie(TRUST_COOKIE, token, max_age=TRUST_DAYS * 86400, httponly=True,
+                        secure=app.config["SESSION_COOKIE_SECURE"], samesite="Lax")
+    return response
+
+
+def list_trusted_devices(user_id):
+    return db_run("SELECT * FROM trusted_devices WHERE user_id = %s AND expires_at > %s ORDER BY created_at DESC",
+                  (user_id, utcnow()), fetch="all", admin=True) or []
+
+
+def revoke_trusted_devices(user_id, device_id=None):
+    if device_id is None:
+        db_run("DELETE FROM trusted_devices WHERE user_id = %s", (user_id,), admin=True)
+    else:
+        db_run("DELETE FROM trusted_devices WHERE user_id = %s AND id = %s", (user_id, device_id), admin=True)
+
+
+# ----- authenticator QR ------------------------------------------------------
+def make_totp_qr(secret, account_name):
+    """PNG data-URI of the provisioning QR code for an authenticator app."""
+    uri = pyotp.TOTP(secret).provisioning_uri(name=account_name, issuer_name="Secure Login Testing")
+    qr = qrcode.QRCode(version=1, box_size=10, border=5)
+    qr.add_data(uri)
+    qr.make(fit=True)
+    buffered = BytesIO()
+    qr.make_image(fill_color="black", back_color="white").save(buffered, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode()
+
+
+# ----- admin ---------------------------------------------------------------------
+ADMIN_USERNAMES = {u.strip() for u in os.getenv("ADMIN_USERNAMES", "").split(",") if u.strip()}
+ADMIN_STEPUP = timedelta(minutes=15)
+
+
+def is_admin_user(user):
+    return bool(user) and user.get("username") in ADMIN_USERNAMES
+
+
+def admin_required(f):
+    """Signed in with every factor + listed in ADMIN_USERNAMES + authenticator code within 15 minutes."""
+    @wraps(f)
+    @login_required
+    @two_factor_required
+    @passkey_verified_required
+    def inner(*args, **kwargs):
+        user = get_user_by_id(session["user_id"])
+        if not is_admin_user(user):
+            abort(404)
+        until = session.get("admin_until")
+        fresh = False
+        if until:
+            try:
+                fresh = utcnow() < datetime.fromisoformat(until)
+            except ValueError:
+                fresh = False
+        if not fresh:
+            return redirect(url_for("admin_verify", next=request.path))
+        return f(*args, **kwargs)
+    return inner
+
+
 DEL_LABELS = {
     "password": "Password",
     "google": "Google account",
