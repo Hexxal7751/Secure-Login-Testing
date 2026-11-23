@@ -2,7 +2,7 @@ import base64
 import json
 from datetime import datetime
 
-from helpers import A, Client, full_login, loc, setup, signup
+from helpers import A, Client, RECOVERY_RE, full_login, loc, setup, signup
 
 
 def _tokens(nonce, sub, email):
@@ -49,6 +49,6 @@ def test_google_only_account_flow():
     g.get("/setup-totp")
     from helpers import totp_now
     secret = g.session()["temp_secret"]
-    page = g.post("/setup-totp", token_from="/setup-totp", totp_code=totp_now(secret)).get_data(as_text=True)
-    assert page.count("-") >= 8                            # recovery codes shown
+    page = g.post("/setup-totp", token_from="/register", totp_code=totp_now(secret)).get_data(as_text=True)
+    assert len(RECOVERY_RE.findall(page)) == 8              # recovery codes shown
     assert loc(_google(Client(), None, "gsub-1", "gina@gmail.com")).endswith("/verify-totp")

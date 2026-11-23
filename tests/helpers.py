@@ -3,6 +3,7 @@
 import importlib
 import re
 import sqlite3
+import time
 import types
 from datetime import datetime
 
@@ -174,6 +175,11 @@ def loc(response):
 
 
 def totp_now(secret):
+    """Current authenticator code. Waits out the last second of a 30-second window so the code
+    can't expire between creating it and the app checking it."""
+    left = 30 - (time.time() % 30)
+    if left < 1.0:
+        time.sleep(left + 0.05)
     return pyotp.TOTP(secret).now()
 
 
@@ -199,7 +205,8 @@ def signup(env, username="alice", email=None, password="pw123456", ua=UA_PHONE, 
     assert loc(c.post("/verify-email", do="verify", totp_code=env.last_code(email))).endswith("/setup-totp")
     c.get("/setup-totp")
     p.secret = c.session()["temp_secret"]
-    page = c.post("/setup-totp", token_from="/setup-totp", totp_code=totp_now(p.secret)).get_data(as_text=True)
+    # the token must come from another page: loading /setup-totp again would create a NEW secret
+    page = c.post("/setup-totp", token_from="/register", totp_code=totp_now(p.secret)).get_data(as_text=True)
     p.codes = RECOVERY_RE.findall(page)
     assert c.post_json("/passkey/register/complete", {
         "id": "x", "rawId": "x", "type": "public-key",
