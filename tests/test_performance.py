@@ -201,12 +201,17 @@ def test_every_page_logs_how_long_it_took_and_how_many_queries_it_used():
     lines = []
     handler = logging.Handler()
     handler.emit = lambda record: lines.append(record.getMessage())
-    logging.getLogger(A.app.logger.name).addHandler(handler)
+    logger = logging.getLogger(A.app.logger.name)
+    logger.addHandler(handler)
+    root = logging.getLogger()
+    before = root.level
+    root.setLevel(logging.WARNING)            # what pytest does: the app must not depend on the root level
     try:
         Client().get("/")
         assert any(ln.startswith("REQ GET / 200 ms=") and "db_ms=" in ln and "db_n=" in ln for ln in lines), lines
     finally:
-        logging.getLogger(A.app.logger.name).removeHandler(handler)
+        root.setLevel(before)
+        logger.removeHandler(handler)
 
 
 def test_gunicorn_uses_threads_so_one_slow_request_does_not_block_everyone():

@@ -59,6 +59,7 @@ from security_middleware import validate_email
 load_dotenv()
 
 app = Flask(__name__)
+app.logger.setLevel(logging.INFO)   # page timing lines must appear whatever the root logger is set to
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s request_id=%(request_id)s %(message)s",
