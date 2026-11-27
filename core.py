@@ -6,7 +6,9 @@ import base64
 import hashlib
 import secrets
 import logging
+import gzip
 import threading
+import time
 import ipaddress
 import traceback
 import urllib.error
@@ -21,6 +23,7 @@ import psycopg2
 import pyotp
 import qrcode
 from psycopg2 import errors as pg_errors
+from psycopg2 import pool as pg_pool
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from flask import (
@@ -172,6 +175,7 @@ limiter = Limiter(
     app=app,
     default_limits=["2000 per day", "300 per hour"],
     storage_uri=REDIS_URL or "memory://",
+    storage_options={"socket_connect_timeout": 2, "socket_timeout": 2} if REDIS_URL else {},
     strategy="fixed-window",
     swallow_errors=True,
     in_memory_fallback_enabled=bool(REDIS_URL),
@@ -236,11 +240,22 @@ def get_nonce():
 def before_request():
     get_nonce()
     g.request_id = secrets.token_hex(4)
+    g.t0 = time.perf_counter()
+    g.db_n, g.db_ms = 0, 0.0
+
+
+def asset_url(filename):
+    """/static URL with the file's modification time, so browsers can cache it for a year."""
+    try:
+        version = int(os.path.getmtime(os.path.join(app.static_folder, filename)))
+    except OSError:
+        version = 0
+    return url_for("static", filename=filename, v=version)
 
 
 @app.context_processor
 def inject_nonce():
-    return {"csp_nonce": get_nonce()}
+    return {"csp_nonce": get_nonce(), "asset": asset_url}
 
 
 @app.before_request
@@ -254,6 +269,47 @@ def enforce_https():
 # ---------------------------------------------------------------------------
 # Security headers
 # ---------------------------------------------------------------------------
+_GZ_CACHE = {}
+COMPRESSIBLE = {"text/html", "text/css", "application/javascript", "text/javascript", "application/json",
+                "image/svg+xml", "text/plain"}
+
+
+def compress_response(response):
+    """gzip text responses (HTML, CSS, JS, JSON): pages become about 5x smaller on slow phone networks."""
+    try:
+        if (response.status_code != 200 or "Content-Encoding" in response.headers
+                or "gzip" not in request.headers.get("Accept-Encoding", "").lower()
+                or response.mimetype not in COMPRESSIBLE):
+            return response
+        response.direct_passthrough = False
+        data = response.get_data()
+        if len(data) < 600:
+            return response
+        key = (request.path, len(data)) if request.endpoint == "static" else None
+        packed = _GZ_CACHE.get(key) if key else None
+        if packed is None:
+            packed = gzip.compress(data, compresslevel=6, mtime=0)
+            if key:
+                _GZ_CACHE[key] = packed
+        response.set_data(packed)
+        response.headers["Content-Encoding"] = "gzip"
+        response.headers.add("Vary", "Accept-Encoding")
+    except Exception:
+        app.logger.exception("compression failed")
+    return response
+
+
+def log_request_timing(response):
+    """One searchable line per page: REQ GET /verify-totp 200 ms=412 db_ms=230 db_n=3 (SLOW if > 1.5 s)."""
+    try:
+        ms = (time.perf_counter() - g.get("t0", time.perf_counter())) * 1000
+        level = logging.WARNING if ms > 1500 else logging.INFO
+        app.logger.log(level, "%sREQ %s %s %s ms=%d db_ms=%d db_n=%d", "SLOW " if ms > 1500 else "",
+                       request.method, request.path, response.status_code, ms, g.get("db_ms", 0), g.get("db_n", 0))
+    except Exception:
+        pass
+
+
 @app.after_request
 def add_security_headers(response):
     nonce = get_nonce()
@@ -275,10 +331,18 @@ def add_security_headers(response):
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-    return response
+    if request.endpoint == "static":
+        # versioned files (?v=...) never change, so the browser may keep them for a year
+        immutable = "v" in request.args
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if immutable else "public, max-age=300"
+        response.headers.pop("Pragma", None)
+        response.headers.pop("Expires", None)
+    else:
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        log_request_timing(response)
+    return compress_response(response)
 
 
 # ---------------------------------------------------------------------------
@@ -346,39 +410,123 @@ def reset_connection_context(conn):
         conn.close()
 
 
+# ----- connection pool: connections are opened once and reused ------------------------------
+DB_POOL_MAX = max(2, int(os.getenv("DB_POOL_MAX", "5") or 5))
+_pool = None
+_pool_lock = threading.Lock()
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                url = os.getenv("SUPABASE_URL")
+                if not url:
+                    raise RuntimeError("SUPABASE_URL is not set")
+                _pool = pg_pool.ThreadedConnectionPool(
+                    1, DB_POOL_MAX, url, connect_timeout=10,
+                    keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3)
+    return _pool
+
+
+def _borrow():
+    """(connection, came_from_pool). Autocommit is on: every call below is a single round trip."""
+    try:
+        conn, pooled = _get_pool().getconn(), True
+    except pg_pool.PoolError:               # every pooled connection is busy: use a temporary one
+        conn, pooled = _connect(), False
+    conn.autocommit = True
+    return conn, pooled
+
+
+def _release(conn, pooled, broken=False):
+    try:
+        if pooled:
+            _get_pool().putconn(conn, close=bool(broken or conn.closed))
+        else:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _ctx_sql(user_id, admin):
+    """Row-level-security context for ONE transaction (set_config(..., true) = local), sent in the
+    same round trip as the query itself."""
+    if admin or (user_id is None and not (has_request_context() and "user_id" in session)):
+        return "SELECT set_config('app.is_admin', 'true', true); "
+    uid = user_id if user_id is not None else session["user_id"]
+    return f"SELECT set_config('app.current_user_id', '{int(uid)}', true); "
+
+
+def _db_exec(sql, params, fetch, user_id, admin):
+    """Run one statement on a pooled connection (retries once if the connection had gone stale)."""
+    full = _ctx_sql(user_id, admin) + sql
+    for attempt in (1, 2):
+        conn, pooled = _borrow()
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(full, params)
+            result = cur.fetchone() if fetch == "one" else cur.fetchall() if fetch == "all" else None
+            _release(conn, pooled)
+            return result
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            _release(conn, pooled, broken=True)
+            if attempt == 2:
+                raise
+        except Exception:
+            _release(conn, pooled)
+            raise
+
+
+def _db_exec_batch(statements, admin, user_id):
+    """Several statements in ONE round trip and ONE transaction (all or nothing)."""
+    for attempt in (1, 2):
+        conn, pooled = _borrow()
+        try:
+            cur = conn.cursor()
+            parts = [cur.mogrify(sql, params) for sql, params in statements]
+            cur.execute(_ctx_sql(user_id, admin).encode("utf-8") + b"; ".join(parts))
+            _release(conn, pooled)
+            return
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            _release(conn, pooled, broken=True)
+            if attempt == 2:
+                raise
+        except Exception:
+            _release(conn, pooled)
+            raise
+
+
+def _db_cache():
+    """Per-request memory: the same user/passkey rows are read once per page, not once per helper."""
+    return g.setdefault("_dbcache", {}) if has_request_context() else None
+
+
+def _note_db(started, is_write):
+    if has_request_context():
+        g.db_n = g.get("db_n", 0) + 1
+        g.db_ms = g.get("db_ms", 0.0) + (time.perf_counter() - started) * 1000
+        if is_write:
+            g.pop("_dbcache", None)
+
+
 def db_run(sql, params=(), fetch=None, user_id=None, admin=False):
     """Run one statement. fetch: None | 'one' | 'all'."""
-    conn = get_admin_connection() if admin else get_db_connection(user_id)
+    started = time.perf_counter()
     try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute(sql, params)
-        result = None
-        if fetch == "one":
-            result = cur.fetchone()
-        elif fetch == "all":
-            result = cur.fetchall()
-        conn.commit()
-        return result
-    except Exception:
-        conn.rollback()
-        raise
+        return _db_exec(sql, params, fetch, user_id, admin)
     finally:
-        reset_connection_context(conn)
+        _note_db(started, not sql.lstrip()[:6].upper() == "SELECT")
 
 
 def db_batch(statements, admin=True, user_id=None):
     """Run several (sql, params) statements in ONE transaction."""
-    conn = get_admin_connection() if admin else get_db_connection(user_id)
+    started = time.perf_counter()
     try:
-        cur = conn.cursor()
-        for sql, params in statements:
-            cur.execute(sql, params)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+        _db_exec_batch(statements, admin, user_id)
     finally:
-        reset_connection_context(conn)
+        _note_db(started, True)
 
 
 def create_users_table():
@@ -508,7 +656,13 @@ def get_user(username):
 
 
 def get_user_by_id(user_id):
-    return db_run("SELECT * FROM users WHERE id = %s", (user_id,), fetch="one", user_id=user_id)
+    cache, key = _db_cache(), ("user", user_id)
+    if cache is not None and key in cache:
+        return dict(cache[key]) if cache[key] else None
+    row = db_run("SELECT * FROM users WHERE id = %s", (user_id,), fetch="one", user_id=user_id)
+    if cache is not None:
+        cache[key] = row
+    return dict(row) if row else None
 
 
 def get_user_by_google_sub(sub):
@@ -523,7 +677,13 @@ def get_user_by_verified_email(email):
 
 
 def get_user_passkeys(user_id):
-    return db_run("SELECT * FROM passkeys WHERE user_id = %s ORDER BY id", (user_id,), fetch="all", user_id=user_id)
+    cache, key = _db_cache(), ("passkeys", user_id)
+    if cache is not None and key in cache:
+        return [dict(r) for r in cache[key]]
+    rows = db_run("SELECT * FROM passkeys WHERE user_id = %s ORDER BY id", (user_id,), fetch="all", user_id=user_id) or []
+    if cache is not None:
+        cache[key] = rows
+    return [dict(r) for r in rows]
 
 
 def save_passkey(user_id, credential_id, public_key, name=None):
@@ -549,6 +709,7 @@ def get_passkey_by_credential_id(credential_id, user_id):
 
 def delete_user_everything(user_id):
     """Remove the account and everything attached to it in one transaction."""
+    forget_sessions(user_id=user_id)
     db_batch([
         ("DELETE FROM email_codes WHERE user_id = %s", (user_id,)),
         ("DELETE FROM recovery_codes WHERE user_id = %s", (user_id,)),
@@ -569,7 +730,7 @@ def _post_json(url, payload, headers):
         headers={**headers, "Content-Type": "application/json", "User-Agent": HTTP_UA},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with urllib.request.urlopen(req, timeout=10) as resp:
         return 200 <= resp.status < 300
 
 
@@ -814,17 +975,36 @@ def create_session_row(user_id, method):
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
         (sid, user_id, now, now, ip, ua, device_label(ua), method), admin=True,
     )
+    run_async(lambda: _purge_old_sessions(user_id, now))
+    run_async(lambda: _fill_location(sid, ip))
+    return sid
+
+
+def _purge_old_sessions(user_id, now):
     try:
         db_run("DELETE FROM user_sessions WHERE user_id = %s AND created_at < %s",
                (user_id, now - timedelta(days=90)), admin=True)
     except Exception:
         app.logger.exception("session history cleanup failed")
-    run_async(lambda: _fill_location(sid, ip))
-    return sid
+
+
+_SESSION_OK = {}                  # session id -> (valid until, user id): saves a query on most requests
+SESSION_CACHE_SECONDS = 10
+
+
+def forget_sessions(user_id=None, sid=None, keep=None):
+    """Drop cached 'this session is fine' answers after a sign-out, so it takes effect at once."""
+    for key, (_until, uid) in list(_SESSION_OK.items()):
+        if (sid and key == sid) or (user_id and uid == user_id and key != keep):
+            _SESSION_OK.pop(key, None)
 
 
 def touch_session(sid, user_id):
-    """True if this session is still valid on the server (not signed out remotely)."""
+    """True if this session is still valid on the server (not signed out remotely).
+    A positive answer is remembered for 10 seconds by this process."""
+    hit = _SESSION_OK.get(sid)
+    if hit and hit[0] > time.monotonic() and hit[1] == user_id:
+        return True
     row = db_run("SELECT revoked, last_seen FROM user_sessions WHERE id = %s AND user_id = %s",
                  (sid, user_id), fetch="one", admin=True)
     if not row or row["revoked"]:
@@ -832,11 +1012,15 @@ def touch_session(sid, user_id):
     now = utcnow()
     if (now - row["last_seen"]).total_seconds() > 60:
         db_run("UPDATE user_sessions SET last_seen = %s WHERE id = %s", (now, sid), admin=True)
+    if len(_SESSION_OK) > 2000:
+        _SESSION_OK.clear()
+    _SESSION_OK[sid] = (time.monotonic() + SESSION_CACHE_SECONDS, user_id)
     return True
 
 
 def end_session(sid):
     if sid:
+        forget_sessions(sid=sid)
         try:
             db_run("UPDATE user_sessions SET revoked = TRUE, ended_at = %s WHERE id = %s AND revoked = FALSE",
                    (utcnow(), sid), admin=True)
@@ -851,6 +1035,7 @@ def revoke_other_sessions(user_id, keep_sid=None):
         "WHERE user_id = %s AND revoked = FALSE AND id <> %s RETURNING id",
         (utcnow(), user_id, keep_sid or ""), fetch="all", admin=True,
     )
+    forget_sessions(user_id=user_id, keep=keep_sid)
     return len(rows or [])
 
 
@@ -927,12 +1112,13 @@ def start_login_session(user, method="password"):
     if keep_link:
         session["pending_link"] = keep_link
     session["sid"] = create_session_row(user["id"], method)
+    run_async(lambda: _reset_login_counters(user["id"]))
+
+
+def _reset_login_counters(user_id):
     try:
-        db_run(
-            "UPDATE users SET failed_login_attempts = 0, account_locked_until = NULL, "
-            "last_login = CURRENT_TIMESTAMP WHERE id = %s",
-            (user["id"],), admin=True,
-        )
+        db_run("UPDATE users SET failed_login_attempts = 0, account_locked_until = NULL, "
+               "last_login = CURRENT_TIMESTAMP WHERE id = %s", (user_id,), admin=True)
     except Exception:
         app.logger.exception("Could not update last_login")
 
@@ -969,15 +1155,18 @@ def finish_signin(user):
     """Called once the last factor (passkey or recovery code) is accepted."""
     session["passkey_verified"] = True
     session["last_activity"] = utcnow().isoformat()
-    try:
-        db_run("UPDATE user_sessions SET completed = TRUE WHERE id = %s", (session.get("sid"),), admin=True)
-        db_run("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s", (user["id"],), admin=True)
-    except Exception:
-        app.logger.exception("could not finish sign-in bookkeeping")
-    link_pending_google(user)
     sid, ip = session.get("sid"), client_ip()
+    run_async(lambda: _mark_completed(sid))
+    link_pending_google(user)
     device = device_label(request.headers.get("User-Agent"))
     run_async(lambda: check_new_signin(user["id"], user.get("email"), sid, device, ip))
+
+
+def _mark_completed(sid):
+    try:
+        db_run("UPDATE user_sessions SET completed = TRUE WHERE id = %s", (sid,), admin=True)
+    except Exception:
+        app.logger.exception("could not finish sign-in bookkeeping")
 
 
 def check_new_signin(user_id, email, sid, device, ip):
@@ -1130,7 +1319,7 @@ def password_breached(raw):
     try:
         req = urllib.request.Request(f"https://api.pwnedpasswords.com/range/{prefix}",
                                      headers={"User-Agent": HTTP_UA, "Add-Padding": "true"})
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=2) as resp:
             body = resp.read().decode("utf-8")
     except Exception as e:
         app.logger.warning("Breach check unavailable: %s", e)

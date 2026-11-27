@@ -7,7 +7,7 @@
     <div class="card-in stg">
       <div class="hero-ic">{{ icon('shield-check') }}</div>
       <h1 data-split>Admin check</h1>
-      <p class="sub">Enter your authenticator code again to open the admin pages. This lasts 15 minutes.</p>
+      <p class="sub">You’re signed in as an admin. Enter a fresh authenticator code to open the admin pages. This lasts 15 minutes.</p>
       {% if error %}<div class="alert" role="alert">{{ icon('alert') }}<span>{{ error }}</span></div>{% endif %}
       {{ otp_form(url_for('admin_verify', next=request.args.get('next', '/admin')), csrf_token, error, 'Open admin') }}
       <div class="divider"><a class="linkbtn" href="{{ url_for('dashboard') }}">Back to dashboard</a></div>

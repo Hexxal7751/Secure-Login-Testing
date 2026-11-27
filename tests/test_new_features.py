@@ -189,7 +189,7 @@ def test_status_page_reports_database_problems_with_503():
     A._status_cache.update(at=None, data=None)
     def down(*a, **k):
         raise RuntimeError("db down")
-    A.db_run = down
+    A._db_exec = down
     r = c.get("/status.json")
     assert r.status_code == 503 and json.loads(r.data)["status"] == "degraded"
 

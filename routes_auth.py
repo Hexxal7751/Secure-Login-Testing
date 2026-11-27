@@ -100,14 +100,14 @@ def register():
                 error = BREACH_MESSAGE
             else:
                 # Free usernames held by registrations that were never finished
-                try:
-                    db_run(
-                        "DELETE FROM users WHERE email IS NOT NULL AND email_verified = FALSE "
-                        "AND secret IS NULL AND created_at < %s",
-                        (utcnow() - timedelta(hours=24),), admin=True,
-                    )
-                except Exception:
-                    app.logger.exception("stale cleanup failed")
+                def _cleanup_stale():
+                    try:
+                        db_run("DELETE FROM users WHERE email IS NOT NULL AND email_verified = FALSE "
+                               "AND secret IS NULL AND created_at < %s",
+                               (utcnow() - timedelta(hours=24),), admin=True)
+                    except Exception:
+                        app.logger.exception("stale cleanup failed")
+                run_async(_cleanup_stale)
 
                 if get_user(username):
                     error = "Username already taken!"
@@ -712,6 +712,7 @@ def dashboard():
         last_login=user.get("last_login"),
         provider=user.get("auth_provider") or "password",
         masked_email=mask_email(user.get("email")),
+        is_admin=is_admin_user(user),
         csrf_token=generate_csrf_token(),
     )
 

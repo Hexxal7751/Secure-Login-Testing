@@ -42,7 +42,8 @@ A = _Proxy()
 A.app.config["SESSION_COOKIE_SECURE"] = False   # the test client talks plain http
 ROOT = __import__("os").path.dirname(__import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 # the real functions, kept so tests can still reach them after setup() replaces some with fakes
-REAL = types.SimpleNamespace(password_breached=A.password_breached, geo_lookup=A.geo_lookup)
+REAL = types.SimpleNamespace(password_breached=A.password_breached, geo_lookup=A.geo_lookup,
+                            db_exec=A._db_exec, db_exec_batch=A._db_exec_batch)
 
 SCHEMA = """
 CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password TEXT, secret TEXT,
@@ -81,7 +82,8 @@ class Env:
         self.db.executescript(SCHEMA)
         self.mails = []
         self.counter = 0
-        A.db_run, A.db_batch = self._run, self._batch
+        A._db_exec, A._db_exec_batch = self._run, self._batch   # the lowest layer: caches/logging stay real
+        A._SESSION_OK.clear()
         A.run_async = lambda fn: fn()                      # background jobs run inline
         A.send_email = lambda to, subject, text: (self.mails.append((to, subject, text)) or True)
         A.password_breached = lambda raw: False
@@ -149,8 +151,8 @@ class Client:
     def _headers(self):
         return {"User-Agent": self.ua, "X-Forwarded-For": self.ip}
 
-    def get(self, path, **kw):
-        return self.c.get(path, headers=self._headers(), **kw)
+    def get(self, path, extra=None, **kw):
+        return self.c.get(path, headers={**self._headers(), **(extra or {})}, **kw)
 
     def token(self, path="/"):
         html = self.get(path).get_data(as_text=True)

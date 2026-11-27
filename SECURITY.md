@@ -32,6 +32,8 @@ This document describes what the application actually implements, and what it do
 
 ### Alerts, breached passwords and the admin area
 - New sign-ins from an unseen device or place email the owner (best-effort; places need the optional IP lookup)
+- Database access uses a small pool of reused connections. The row-level-security context is set for one transaction only (`set_config(..., true)`), in the same round trip as the query, so it can never leak to another request
+- A valid session is remembered by each worker for 10 seconds. A sign-out on the same worker is immediate; another worker may take up to 10 seconds to notice
 - Passwords are checked with the Pwned Passwords range API: only the first 5 characters of the SHA-1 are sent, and the check is skipped (fails open) if the service is unreachable
 - Admins are the usernames in `ADMIN_USERNAMES`. They must be fully signed in and re-enter an authenticator code every 15 minutes; admins can't be disabled from the admin page
 - Security events are stored in the database (shown to admins, included in a user's own data export) and written as searchable log lines

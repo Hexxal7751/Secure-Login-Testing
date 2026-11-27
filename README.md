@@ -29,7 +29,7 @@ A Flask authentication demo with **username + password or Google sign-in**, **TO
 - **Admin dashboard** (users, locked/disabled accounts, recent security events, disable/enable/unlock/sign out), protected by an extra authenticator check
 - **Download my data** as JSON, and a public **status page** (`/status`, `/status.json`)
 - **Light/dark theme** and a **language switch** (English, Spanish, French)
-- **Searchable logs**, automated tests and GitHub Actions
+- **Searchable logs**, per-page timing lines, automated tests and GitHub Actions
 - **Account deletion** that re-checks every factor (password or Google, email code, TOTP, passkey) and ends with a typed confirmation
 - **Rate limiting** and a temporary **account lockout** after repeated failed logins
 - **CSRF tokens** on every form and passkey request
@@ -102,6 +102,9 @@ GOOGLE_CLIENT_SECRET=GOCSPX-xxxx
 # PROXY_HOPS=1                 or: how many proxies sit in front of the app
 # ADMIN_USERNAMES=you          comma-separated usernames that may open /admin
 # LOG_TO_FILE=1                also write logs/security.log
+# DB_POOL_MAX=5                database connections kept open per worker (default 5)
+# WEB_CONCURRENCY=2            gunicorn worker processes (default 2)
+# WEB_THREADS=4                threads per worker (default 4)
 
 # Email codes: choose ONE option
 # A) AgentMail (no domain needed)
@@ -159,6 +162,25 @@ Rate-limit counters are stored **in memory** (reset on restart, not shared betwe
 
 The app prints a configuration warning at startup (without showing any secret) when it spots an obvious mistake.
 
+## 👑 Admin access
+
+There is no separate admin login. An admin is a normal account that is listed in `ADMIN_USERNAMES`.
+
+1. In Render → Environment set `ADMIN_USERNAMES=yourusername` (exactly as registered; case matters) and redeploy.
+2. Sign in as usual: password or Google, then authenticator code, then passkey.
+3. Open **Dashboard → Admin** (or **Account & security → Admin**, or go to `/admin`).
+4. Enter a fresh authenticator code once. The admin pages stay open for 15 minutes.
+
+`/admin` shows a 404 page when your username isn't listed or the service wasn't redeployed after adding it.
+
+## ⚡ Performance
+
+- Database connections are opened once and reused (a pool), and every query costs one round trip. Before, each query opened a new connection to Supabase, which took seconds on a distant database.
+- Pages read the same rows once, sign-in bookkeeping runs in the background, CSS/JS are cached for a year and compressed.
+- `gunicorn.conf.py` runs 2 workers with 4 threads each, so one slow request no longer blocks everyone.
+- Every page writes a line such as `REQ GET /verify-totp 200 ms=412 db_ms=230 db_n=3` to the logs. Search Render's logs for `SLOW` to find pages over 1.5 seconds. If `db_ms` is large, the database is far away: put the Render service in the same region as your Supabase project (look at the host in `SUPABASE_URL`, e.g. `aws-0-us-west-1` is US West).
+- If `REDIS_URL` is set but unreachable the rate limiter now gives up after 2 seconds instead of hanging every page.
+
 ## 🧪 Tests
 
 ```bash
@@ -177,6 +199,7 @@ routes_auth.py              Login, register, Google, passkeys, TOTP, dashboard
 routes_account.py           Account hub, deletion, password reset, recovery codes, changes
 routes_misc.py              Logout and error pages
 routes_admin.py             Admin pages, network check, public status page
+gunicorn.conf.py            Worker/thread settings (picked up automatically by gunicorn)
 i18n.py                     Language switch engine
 translations_es.py          Spanish texts
 translations_fr.py          French texts

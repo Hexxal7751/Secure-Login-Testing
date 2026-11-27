@@ -375,6 +375,7 @@ def session_revoke():
         db_run("UPDATE user_sessions SET revoked = TRUE, ended_at = %s "
                "WHERE id = %s AND user_id = %s AND revoked = FALSE",
                (utcnow(), sid, session["user_id"]), admin=True)
+        forget_sessions(sid=sid)
         flash("That device was signed out.", "success")
     return redirect(url_for("account"))
 
